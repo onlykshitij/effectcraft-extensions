@@ -1,0 +1,276 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+// Duotone vector icons on a 24 x 24 design grid, drawn with ScriptUIGraphics. EffectCraft's
+// graphics have lines, rects and ellipses but no curves, so curves and arcs are flattened here.
+//
+// An icon is an array of layers. A layer is a path string (stroked in the foreground colour) or
+// {d, stroke, fill, w, alpha}: stroke / fill are "fg", "accent" or a hex colour, w is the pen
+// width in design units (default 2). Strokes get round joins: ScriptUIGraphics has no join
+// style, so a dot is drawn on every corner. Each icon is flattened once per
+// size and colours (circles stay ellipses); a redraw only replays the points, because every
+// point goes into the window snapshot EffectCraft takes after each event. Path commands,
+// absolute design units:
+//   M x y, L x y, H x, V y, Q x1 y1 x y, C x1 y1 x2 y2 x y, Z
+//   A cx cy r a0 a1          arc, degrees, 0 = +x, clockwise on screen (joins the current point)
+//   O cx cy r                circle            E cx cy rx ry      ellipse
+//   R x y w h                rectangle         U x y w h r        rounded rectangle
+//   P cx cy r n rot          regular polygon   S cx cy r1 r2 n rot  star (n points)
+// An icon can also be a function(g, x, y, size, fg, accent) that draws itself; fg and accent
+// are [r, g, b, a].
+
+MK.icons = (function () {
+  var U = MK.util;
+  var CURVE_STEPS = 5, ARC_STEP = 30, PEN = 2, BEND_COS = Math.cos(55 * Math.PI / 180);
+  var cache = {};
+
+  var G = {};
+  G.quad = function (p0, p1, p2, steps) {
+    var out = [], n = steps || CURVE_STEPS;
+    for (var i = 1; i <= n; i++) {
+      var t = i / n, u = 1 - t;
+      out.push([u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0], u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]]);
+    }
+    return out;
+  };
+  G.cubic = function (p0, p1, p2, p3, steps) {
+    var out = [], n = steps || CURVE_STEPS;
+    for (var i = 1; i <= n; i++) {
+      var t = i / n, u = 1 - t, a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, d = t * t * t;
+      out.push([a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0], a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1]]);
+    }
+    return out;
+  };
+  // Points along an arc from a0 to a1 degrees (both included), a point every `step` degrees
+  // at most (default 30).
+  G.arc = function (cx, cy, rx, ry, a0, a1, step) {
+    var out = [], n = Math.max(2, Math.ceil(Math.abs(a1 - a0) / (step || ARC_STEP)));
+    for (var i = 0; i <= n; i++) {
+      var a = (a0 + (a1 - a0) * i / n) * Math.PI / 180;
+      out.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
+    }
+    return out;
+  };
+  G.roundRect = function (x, y, w, h, r, step) {
+    var k = Math.max(0, Math.min(r, w / 2, h / 2));
+    if (!k) return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    return [].concat(G.arc(x + w - k, y + k, k, k, -90, 0, step), G.arc(x + w - k, y + h - k, k, k, 0, 90, step),
+      G.arc(x + k, y + h - k, k, k, 90, 180, step), G.arc(x + k, y + k, k, k, 180, 270, step));
+  };
+  G.star = function (cx, cy, r1, r2, n, rot) {
+    var out = [], m = Math.max(2, Math.round(n));
+    for (var i = 0; i < 2 * m; i++) {
+      var a = ((rot || 0) - 90 + i * 180 / m) * Math.PI / 180, r = i % 2 ? r2 : r1;
+      out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    return out;
+  };
+  G.polygon = function (cx, cy, r, n, rot) {
+    var out = [], m = Math.max(3, Math.round(n));
+    for (var i = 0; i < m; i++) {
+      var a = ((rot || 0) - 90 + i * 360 / m) * Math.PI / 180;
+      out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    return out;
+  };
+
+  var ARGS = { M: 2, L: 2, H: 1, V: 1, Q: 4, C: 6, Z: 0, A: 5, O: 3, E: 4, R: 4, U: 5, P: 5, S: 6 };
+
+  // Path string -> [{pts: [[x, y]...], closed} | {e: [x, y, w, h]}] in design units (e: an
+  // ellipse in its bounding box).
+  function compile(d) {
+    if (U.has(cache, d)) return cache[d];
+    var tok = String(d).match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:[eE]-?\d+)?/g) || [];
+    var subs = [], cur = null, pos = [0, 0], i = 0;
+    function start(p) { cur = { pts: [p], closed: false }; subs.push(cur); pos = p; }
+    function to(p) { if (!cur) start(pos); cur.pts.push(p); pos = p; }
+    function shape(pts) { subs.push({ pts: pts, closed: true }); cur = null; }
+    function ellipse(cx, cy, rx, ry) { subs.push({ e: [cx - rx, cy - ry, 2 * rx, 2 * ry] }); cur = null; }
+    while (i < tok.length) {
+      var c = tok[i++];
+      if (!U.has(ARGS, c)) continue;
+      var a = [];
+      for (var k = 0; k < ARGS[c]; k++) a.push(Number(tok[i++]));
+      if (c === "M") start([a[0], a[1]]);
+      else if (c === "L") to([a[0], a[1]]);
+      else if (c === "H") to([a[0], pos[1]]);
+      else if (c === "V") to([pos[0], a[0]]);
+      else if (c === "Q") { var q = G.quad(pos, [a[0], a[1]], [a[2], a[3]]); for (var j = 0; j < q.length; j++) to(q[j]); }
+      else if (c === "C") { var cu = G.cubic(pos, [a[0], a[1]], [a[2], a[3]], [a[4], a[5]]); for (var m = 0; m < cu.length; m++) to(cu[m]); }
+      else if (c === "A") {
+        var ar = G.arc(a[0], a[1], a[2], a[2], a[3], a[4]);
+        if (cur) to(ar[0]); else start(ar[0]);
+        for (var n = 1; n < ar.length; n++) to(ar[n]);
+      } else if (c === "Z") { if (cur) { cur.closed = true; pos = cur.pts[0]; cur = null; } }
+      else if (c === "O") ellipse(a[0], a[1], a[2], a[2]);
+      else if (c === "E") ellipse(a[0], a[1], a[2], a[3]);
+      else if (c === "R") shape([[a[0], a[1]], [a[0] + a[2], a[1]], [a[0] + a[2], a[1] + a[3]], [a[0], a[1] + a[3]]]);
+      else if (c === "U") shape(G.roundRect(a[0], a[1], a[2], a[3], a[4]));
+      else if (c === "P") shape(G.polygon(a[0], a[1], a[2], a[3], a[4]));
+      else if (c === "S") shape(G.star(a[0], a[1], a[2], a[3], a[4], a[5]));
+    }
+    cache[d] = subs;
+    return subs;
+  }
+
+  function color(spec, fg, accent) {
+    if (spec === "fg") return fg;
+    if (spec === "accent") return accent;
+    return U.normHex(spec) ? U.rgba(spec) : fg;
+  }
+
+  function withAlpha(c, a) { return a === undefined ? c : [c[0], c[1], c[2], c[3] * a]; }
+
+  function r1(v) { return Math.round(v * 10) / 10; }
+
+  // Subpaths in px (k px per design unit), rounded to 0.1 px: {e: [x, y, w, h]} or
+  // {pts: [x0, y0, x1, y1...], closed}.
+  function toPx(subs, k) {
+    return U.map(subs, function (s) {
+      if (s.e) return { e: [r1(s.e[0] * k), r1(s.e[1] * k), r1(s.e[2] * k), r1(s.e[3] * k)] };
+      var flat = [];
+      for (var j = 0; j < s.pts.length; j++) flat.push(r1(s.pts[j][0] * k), r1(s.pts[j][1] * k));
+      return { pts: flat, closed: s.closed };
+    });
+  }
+
+  // Dots of diameter `w` px on the corners of `subs` (turns over 55 degrees: not the small
+  // turns of a flattened curve). Round joins only: end caps would double the dots.
+  function joins(subs, k, w) {
+    var out = [], r = w / 2;
+    for (var i = 0; i < subs.length; i++) {
+      var pts = subs[i].pts || [], n = pts.length, closed = subs[i].closed;
+      for (var j = 0; j < n; j++) {
+        var p = pts[j], dot = false;
+        if ((closed || (j > 0 && j < n - 1)) && n > 2) {
+          var a = pts[(j + n - 1) % n], b = pts[(j + 1) % n];
+          var ux = p[0] - a[0], uy = p[1] - a[1], vx = b[0] - p[0], vy = b[1] - p[1];
+          var len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+          dot = len > 1e-9 && (ux * vx + uy * vy) / len < BEND_COS;
+        }
+        if (dot) out.push({ e: [r1(p[0] * k - r), r1(p[1] * k - r), r1(w), r1(w)] });
+      }
+    }
+    return out;
+  }
+
+  // An icon as paint operations at the origin: [{fill or stroke: colour, w, subs}]. A run of
+  // layers stroked alike becomes one stroke and one fill for its dots (fewer, bigger draw
+  // operations; the order of different colours is kept).
+  function plan(icon, size, fgHex, accentHex) {
+    var fg = U.rgba(fgHex), accent = U.rgba(accentHex), k = size / 24, ops = [], run = null;
+    function same(a, b) { return a.join() === b.join(); }
+    for (var i = 0; i < icon.length; i++) {
+      var L = typeof icon[i] === "string" ? { d: icon[i] } : icon[i];
+      if (!L || !L.d) continue;
+      var subs = compile(L.d);
+      if (!subs.length) continue;
+      var stroke = L.stroke || (L.fill ? null : "fg");
+      if (L.fill) {
+        ops.push({ fill: withAlpha(color(L.fill, fg, accent), L.alpha), subs: toPx(subs, k) });
+        run = null;
+      }
+      if (stroke) {
+        var col = withAlpha(color(stroke, fg, accent), L.alpha), w = r1(Math.max(1, (L.w || PEN) * k));
+        if (!run || !same(run.line.stroke, col) || run.line.w !== w) {
+          run = { line: { stroke: col, w: w, subs: [] }, dots: { fill: col, subs: [] } };
+          ops.push(run.line, run.dots);
+        }
+        run.line.subs = run.line.subs.concat(toPx(subs, k));
+        // Under 2 px a mitred corner looks the same as a round one.
+        if (w >= 2) run.dots.subs = run.dots.subs.concat(joins(subs, k, w));
+      }
+    }
+    // Neighbours painted alike become one operation; the paint order doesn't change.
+    var out = [];
+    for (var o = 0; o < ops.length; o++) {
+      var op = ops[o], last = out[out.length - 1];
+      if (!op.subs.length) continue;
+      if (last && !op.stroke === !last.stroke && same(op.stroke || op.fill, last.stroke || last.fill) && op.w === last.w) last.subs = last.subs.concat(op.subs);
+      else out.push(op);
+    }
+    return out;
+  }
+
+  // Paints a plan at (x, y). Each operation's path is built once per position and kept
+  // (graphics.currentPath), then handed to fillPath / strokePath as their path argument.
+  function replay(g, ops, x, y) {
+    var at = x + "," + y;
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i], paths = op.paths || (op.paths = {}), path = paths[at];
+      if (!path) {
+        g.newPath();
+        for (var s = 0; s < op.subs.length; s++) {
+          var sub = op.subs[s], p = sub.pts;
+          if (sub.e) {
+            g.ellipsePath(x + sub.e[0], y + sub.e[1], sub.e[2], sub.e[3]);
+            continue;
+          }
+          g.moveTo(x + p[0], y + p[1]);
+          for (var j = 2; j < p.length; j += 2) g.lineTo(x + p[j], y + p[j + 1]);
+          if (sub.closed) g.closePath();
+        }
+        path = paths[at] = g.currentPath;
+      }
+      if (op.stroke) g.strokePath(g.newPen(g.PenType.SOLID_COLOR, op.stroke, op.w), path);
+      else g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, op.fill), path);
+    }
+  }
+
+  // Draws `icon` in the size x size square at (x, y). fg and accent are hex colours.
+  function draw(g, icon, x, y, size, fgHex, accentHex) {
+    if (typeof icon === "function") return icon(g, x, y, size, U.rgba(fgHex), U.rgba(accentHex));
+    if (!U.isArray(icon)) icon = BUILTIN.missing;
+    // shortcut: plans live on the icon array and are never evicted (one per size and colour
+    // pair in use); add a size limit if icons ever take arbitrary sizes.
+    var plans = icon.__mkPlans || (icon.__mkPlans = {}), key = size + "|" + fgHex + "|" + accentHex;
+    if (!U.has(plans, key)) plans[key] = plan(icon, size, fgHex, accentHex);
+    replay(g, plans[key], x, y);
+  }
+
+  // A gear outline: eight flat teeth around the centre of the grid.
+  function gear() {
+    var pts = [];
+    var at = function (deg, r) { var a = deg * Math.PI / 180; return (12 + r * Math.cos(a)).toFixed(2) + " " + (12 + r * Math.sin(a)).toFixed(2); };
+    for (var i = 0; i < 8; i++) pts.push(at(i * 45 - 14, 6.9), at(i * 45 - 8, 9.6), at(i * 45 + 8, 9.6), at(i * 45 + 14, 6.9));
+    return "M" + pts.join(" L") + " Z";
+  }
+
+  // Built-in icons that aren't tools.
+  var BUILTIN = {
+    // The panel header and edit mode: pencil (edit mode), gear (Layout & Style), remove, add.
+    pencil: ["M4.5 19.5 L5.6 15 L15.4 5.2 Q16.6 4 17.8 5.2 L18.8 6.2 Q20 7.4 18.8 8.6 L9 18.4 Z", "M13.6 7 L17 10.4"],
+    gear: [gear(), "O12 12 3"],
+    close: ["M7 7 L17 17 M17 7 L7 17"],
+    plus: ["M12 5 V19 M5 12 H19"],
+    // A magnifier (the lens).
+    command: [{ d: "O10 10 5.5", stroke: "accent", w: 2 }, { d: "M14.2 14.2 L20 20", w: 2.4 }],
+    // {} braces (the dot).
+    libExpression: [
+      "M9 4 Q6 4 6 7 L6 9.6 Q6 12 3.8 12 Q6 12 6 14.4 L6 17 Q6 20 9 20",
+      "M15 4 Q18 4 18 7 L18 9.6 Q18 12 20.2 12 Q18 12 18 14.4 L18 17 Q18 20 15 20",
+      { d: "O12 12 1.9", fill: "accent" }
+    ],
+    // A terminal prompt >_ (the cursor).
+    libScript: ["U3 4.5 18 15 2.2", "M7 9.5 L10 12 L7 14.5", { d: "R12 14.2 5 2", fill: "accent" }],
+    // A "?" in a circle.
+    missing: ["O12 12 9", "M9.2 9.6 Q9.2 6.6 12 6.6 Q14.8 6.6 14.8 9.2 Q14.8 11 12.9 11.9 Q12 12.4 12 14.2", { d: "O12 17.4 1.2", fill: "fg" }]
+  };
+
+  // PNG icons of library items, loaded once. null when the file is missing or not a PNG.
+  var images = {};
+  function image(path) {
+    var p = String(path || "");
+    if (!p) return null;
+    if (U.has(images, p)) return images[p];
+    var img = null;
+    try {
+      var f = new File(p);
+      if (/\.png$/i.test(p) && f.exists) img = ScriptUI.newImage(f);
+    } catch (e) {
+      img = null;
+    }
+    images[p] = img;
+    return img;
+  }
+
+  return { draw: draw, compile: compile, geom: G, builtin: BUILTIN, image: image };
+})();
