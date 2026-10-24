@@ -1021,13 +1021,14 @@ MK.keys = (function () {
     if (want("value") || !prop.numKeys) prop.setValueAtTime(t, k.value);
     else prop.addKey(t);
     var i = prop.nearestKeyIndex(t);
-    if (want("interp") && k.inInterp !== undefined && prop.isInterpolationTypeValid(k.inInterp) && prop.isInterpolationTypeValid(k.outInterp)) {
-      prop.setInterpolationTypeAtKey(i, k.inInterp, k.outInterp);
-    }
     if (want("ease") && k.inEase && k.outEase) {
       K.setEase(prop, i, k.inEase, k.outEase);
       if (k.continuous !== undefined) prop.setTemporalContinuousAtKey(i, k.continuous);
       if (k.autoBezier !== undefined) prop.setTemporalAutoBezierAtKey(i, k.autoBezier);
+    }
+    // After the ease: EffectCraft's setTemporalEaseAtKey switches both sides to Bezier.
+    if (want("interp") && k.inInterp !== undefined && prop.isInterpolationTypeValid(k.inInterp) && prop.isInterpolationTypeValid(k.outInterp)) {
+      prop.setInterpolationTypeAtKey(i, k.inInterp, k.outInterp);
     }
     if (want("spatial") && k.spatial && prop.isSpatial && k.inTangent) {
       prop.setSpatialTangentsAtKey(i, k.inTangent, k.outTangent);
@@ -1037,6 +1038,16 @@ MK.keys = (function () {
     // Roving only applies between other keys; EffectCraft refuses it elsewhere.
     if (want("roving") && k.roving) try { prop.setRovingAtKey(i, true); } catch (e) {}
     return i;
+  };
+  // Writes keys read with K.read, each at newTime(key) (default its own time). Roving is set once
+  // all are written, since a key only roves between two others. Returns the count.
+  K.writeAll = function (prop, ks, newTime) {
+    var at = function (k) { return newTime ? newTime(k) : k.time; };
+    for (var j = 0; j < ks.length; j++) K.write(prop, ks[j], at(ks[j]), { roving: false });
+    for (var r = 0; r < ks.length; r++) {
+      if (ks[r].roving) try { prop.setRovingAtKey(prop.nearestKeyIndex(at(ks[r])), true); } catch (e) {}
+    }
+    return ks.length;
   };
   // Removes keys by 1-based index (any order).
   K.remove = function (prop, indices) {
@@ -1054,7 +1065,9 @@ MK.shapes = (function () {
   S.GROUP = "ADBE Vector Group";
   S.PATH_ITEM = "ADBE Vector Shape - Group";
   S.PATH = "ADBE Vector Shape";
-  S.contents = function (layer) { return layer instanceof ShapeLayer ? layer.property("ADBE Root Vectors Group") : null; };
+  // By the Contents group, not `instanceof ShapeLayer`: after an Undo, EffectCraft can reuse a
+  // removed layer's id and hand back that layer's old wrapper type.
+  S.contents = function (layer) { return (layer && layer.property("ADBE Root Vectors Group")) || null; };
   S.isGroup = function (p) { return p && p.matchName === S.GROUP; };
   // The contents (child list) of a group, or the root contents itself.
   S.inner = function (p) { return S.isGroup(p) ? p.property("ADBE Vectors Group") : p; };
@@ -1102,6 +1115,222 @@ MK.shapes = (function () {
     return m;
   };
   return S;
+})();
+
+// ---- src/core/35_animate.js
+// Keyframe helpers the Animate tools share (Ease Keyframes, Ease Copy, Sequencer, Clone Keys,
+// Fix Keys): writing a key without losing its interpolation, moving keys, and the average speed
+// of a segment that temporal ease speeds are measured against.
+
+MK.anim = (function () {
+  var U = MK.util, K = MK.keys;
+  var A = {};
+
+  // MK.keys.write; a key read as selected is selected again.
+  A.write = function (prop, k, time, parts) {
+    var i = K.write(prop, k, time, parts);
+    if (k.selected) prop.setSelectedAtKey(i, true);
+    return i;
+  };
+
+  // MK.keys.writeAll at newTime(key), reselecting keys read as selected.
+  A.writeAll = function (prop, ks, newTime) {
+    K.writeAll(prop, ks, newTime);
+    for (var j = 0; j < ks.length; j++) if (ks[j].selected) prop.setSelectedAtKey(prop.nearestKeyIndex(newTime(ks[j])), true);
+    return ks.length;
+  };
+
+  // Moves keys `indices` (1-based) of prop to newTime(key): all are read, removed, then written,
+  // so they can't land on each other. A key landing on an unmoved key replaces it.
+  A.move = function (prop, indices, newTime) {
+    var ks = U.map(indices, function (i) { return K.read(prop, i); });
+    K.remove(prop, indices);
+    return A.writeAll(prop, ks, newTime);
+  };
+
+  // The properties among `props` that have selected keyframes.
+  A.withSelectedKeys = function (props) {
+    return U.filter(props, function (p) { return MK.sel.isAnimatable(p) && MK.sel.selectedKeys(p).length > 0; });
+  };
+
+  // Length of a cubic Bezier through p0..p3 (2D or 3D), by 100 straight pieces.
+  function arcLength(p0, p1, p2, p3) {
+    var len = 0, prev = p0;
+    for (var s = 1; s <= 100; s++) {
+      var t = s / 100, u = 1 - t, q = [], d2 = 0;
+      for (var d = 0; d < p0.length; d++) {
+        q.push(u * u * u * p0[d] + 3 * u * u * t * p1[d] + 3 * u * t * t * p2[d] + t * t * t * p3[d]);
+        d2 += (q[d] - prev[d]) * (q[d] - prev[d]);
+      }
+      len += Math.sqrt(d2);
+      prev = q;
+    }
+    return len;
+  }
+
+  // The average speed from key a to key b, one entry per temporal ease dimension, in the units
+  // KeyframeEase speeds use: signed per dimension, or the path length per second for spatial
+  // and other single-ease array values.
+  A.avgSpeed = function (prop, a, b) {
+    var dims = prop.keyOutTemporalEase(a).length, dt = prop.keyTime(b) - prop.keyTime(a);
+    var va = prop.keyValue(a), vb = prop.keyValue(b), out = [];
+    if (!(dt > 0)) dt = 1;
+    if (!U.isArray(va)) return [(vb - va) / dt];
+    if (dims === 1) {
+      var n = Math.min(va.length, vb.length, prop.isSpatial ? 3 : 4), p0 = [], p3 = [], p1 = [], p2 = [];
+      var to = prop.isSpatial ? prop.keyOutSpatialTangent(a) : [], ti = prop.isSpatial ? prop.keyInSpatialTangent(b) : [];
+      for (var d = 0; d < n; d++) {
+        p0.push(va[d]);
+        p3.push(vb[d]);
+        p1.push(va[d] + (to[d] || 0));
+        p2.push(vb[d] + (ti[d] || 0));
+      }
+      return [arcLength(p0, p1, p2, p3) / dt];
+    }
+    for (var e = 0; e < dims; e++) out.push(((vb[e] || 0) - (va[e] || 0)) / dt);
+    return out;
+  };
+
+  return A;
+})();
+
+// ---- src/core/36_rig.js
+// Helpers for the Rig tools: the path properties in the selection (shape paths and mask paths),
+// expression text that reads a path or shape group, the shape-group matrix inside expressions,
+// sampled path outlines for bounds, and label colours.
+
+MK.rig = (function () {
+  var U = MK.util, SH = MK.shapes;
+  var R = {};
+  R.SHAPE_PATH = "ADBE Vector Shape";
+  R.MASK_PATH = "ADBE Mask Shape";
+
+  // "layerIndex:i:j:k", the property's place in the layer tree, to spot the same property twice.
+  function key(p) {
+    var parts = [];
+    for (var q = p, n = 0; q && !(q instanceof Layer) && n < 200; q = q.parentProperty, n++) parts.unshift(q.propertyIndex);
+    return MK.sel.layerOf(p).index + ":" + parts.join(":");
+  }
+
+  // The selected path properties, also when the path item ("Path 1") or the mask is the selected
+  // group: [{prop, layer, mask, groups}], in selection order, each once. `groups` are the
+  // enclosing shape groups, outermost first (none for masks).
+  R.selectedPaths = function (ctx) {
+    var out = [], seen = {};
+    function add(p) {
+      if (!p || seen[key(p)]) return;
+      seen[key(p)] = true;
+      var mask = p.matchName === R.MASK_PATH;
+      out.push({ prop: p, layer: MK.sel.layerOf(p), mask: mask, groups: mask ? [] : SH.groupsOf(p) });
+    }
+    var i;
+    for (i = 0; i < ctx.props.length; i++) {
+      var m = ctx.props[i].matchName;
+      if (m === R.SHAPE_PATH || m === R.MASK_PATH) add(ctx.props[i]);
+    }
+    for (i = 0; i < ctx.groups.length; i++) {
+      var g = ctx.groups[i];
+      if (g.matchName === SH.PATH_ITEM) add(g.property(R.SHAPE_PATH));
+      else if (g.matchName === "ADBE Mask Atom") add(g.property(R.MASK_PATH));
+    }
+    return out;
+  };
+
+  // Expression text reaching a shape item, shape path, mask or mask path from any layer:
+  // thisComp.layer("Shape").content("Group 1").content("Path 1").path. With `self` it starts
+  // from thisLayer (for an expression on that same layer).
+  R.ref = function (p, self) {
+    var s = "";
+    for (var q = p, n = 0; q && !(q instanceof Layer) && n < 200; q = q.parentProperty, n++) {
+      var m = q.matchName;
+      if (m === R.SHAPE_PATH) s = ".path" + s;
+      else if (m === R.MASK_PATH) s = ".maskPath" + s;
+      else if (m === "ADBE Mask Atom") s = ".mask(" + MK.expr.str(q.name) + ")" + s;
+      else if (q.parentProperty && (q.parentProperty.matchName === "ADBE Vectors Group" || q.parentProperty.matchName === "ADBE Root Vectors Group")) s = ".content(" + MK.expr.str(q.name) + ")" + s;
+    }
+    return (self ? "thisLayer" : "thisComp.layer(" + MK.expr.str(MK.sel.layerOf(p).name) + ")") + s;
+  };
+
+  // Expression functions on 2D affine matrices [a, b, c, d, e, f] (x' = a x + b y + c,
+  // y' = d x + e y + f), with mkGroupM(group) building a shape group's transform the way
+  // MK.mat.transform and EffectCraft's renderer do: position, rotation, skew, scale, -anchor.
+  // mkPathOf(v) works around EffectCraft 0.14 handing a path property's own expression `value`
+  // (and thisProperty.value) as a raw [points, inTangents, outTangents, closed] list instead of
+  // a Path object; it returns a Path either way.
+  R.LIB = [
+    "function mkMul(m, n) {",
+    "  return [m[0] * n[0] + m[1] * n[3], m[0] * n[1] + m[1] * n[4], m[0] * n[2] + m[1] * n[5] + m[2],",
+    "    m[3] * n[0] + m[4] * n[3], m[3] * n[1] + m[4] * n[4], m[3] * n[2] + m[4] * n[5] + m[5]];",
+    "}",
+    "function mkRot(deg) { var r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r); return [c, -s, 0, s, c, 0]; }",
+    "function mkGroupM(g) {",
+    "  var t = g.transform, an = t.anchorPoint.value, po = t.position.value, sc = t.scale.value;",
+    "  var m = mkMul([1, 0, po[0], 0, 1, po[1]], mkRot(t.rotation.value));",
+    "  var k = Math.tan(-t.skew.value * Math.PI / 180), ax = t.skewAxis.value;",
+    "  if (k) m = mkMul(m, mkMul(mkMul(mkRot(ax), [1, k, 0, 0, 1, 0]), mkRot(-ax)));",
+    "  m = mkMul(m, [sc[0] / 100, 0, 0, 0, sc[1] / 100, 0]);",
+    "  return mkMul(m, [1, 0, -an[0], 0, 1, -an[1]]);",
+    "}",
+    "function mkApply(m, p) { return [m[0] * p[0] + m[1] * p[1] + m[2], m[3] * p[0] + m[4] * p[1] + m[5]]; }",
+    "function mkVec(m, v) { return [m[0] * v[0] + m[1] * v[1], m[3] * v[0] + m[4] * v[1]]; }",
+    "function mkInv(m) {",
+    "  var d = m[0] * m[4] - m[1] * m[3];",
+    "  if (!d || !isFinite(d)) return [1, 0, 0, 0, 1, 0];",
+    "  var a = m[4] / d, b = -m[1] / d, c = -m[3] / d, e = m[0] / d;",
+    "  return [a, b, -(a * m[2] + b * m[5]), c, e, -(c * m[2] + e * m[5])];",
+    "}",
+    "function mkFinite(p) { return isFinite(p[0]) && isFinite(p[1]); }",
+    "function mkPathOf(v) { return v && typeof v.points === \"function\" ? v : createPath(v[0], v[1], v[2], !!v[3]); }"
+  ].join("\n");
+
+  // Expression code that sets mkX to the matrix from a path's own space to its layer's space,
+  // through its enclosing shape groups at the current time (identity for masks). Needs R.LIB.
+  R.matrixCode = function (groups, self) {
+    var s = "var mkX = [1, 0, 0, 0, 1, 0];\n";
+    for (var i = 0; i < groups.length; i++) s += "mkX = mkMul(mkX, mkGroupM(" + R.ref(groups[i], self) + "));\n";
+    return s;
+  };
+
+  // Points along a Shape value (its vertices and `steps` points per Bézier segment), through the
+  // 2D matrix m (default identity). For bounds.
+  R.outline = function (shape, m, steps) {
+    var v = shape.vertices || [], ins = shape.inTangents || [], outs = shape.outTangents || [];
+    var n = v.length, k = steps || 16, pts = [], mat = m || MK.mat.identity();
+    var segs = shape.closed ? n : n - 1;
+    if (n === 1) pts.push(v[0]);
+    for (var i = 0; i < segs; i++) {
+      var a = v[i], b = v[(i + 1) % n], o = outs[i] || [0, 0], c = ins[(i + 1) % n] || [0, 0];
+      var p1 = [a[0] + o[0], a[1] + o[1]], p2 = [b[0] + c[0], b[1] + c[1]];
+      for (var s = 0; s <= k; s++) {
+        var u = s / k, w = 1 - u;
+        pts.push([w * w * w * a[0] + 3 * w * w * u * p1[0] + 3 * w * u * u * p2[0] + u * u * u * b[0],
+          w * w * w * a[1] + 3 * w * w * u * p1[1] + 3 * w * u * u * p2[1] + u * u * u * b[1]]);
+      }
+    }
+    return U.map(pts, function (p) { return MK.mat.apply(mat, p); });
+  };
+
+  // A label colour (1-16) no layer of the comp uses yet, or the next one in turn when all are taken.
+  R.freeLabel = function (comp) {
+    var used = {};
+    for (var i = 1; i <= comp.numLayers; i++) used[comp.layer(i).label] = true;
+    for (var l = 1; l <= 16; l++) if (!used[l]) return l;
+    return 1 + comp.numLayers % 16;
+  };
+
+  // True when another layer of the comp has this layer's name, so thisComp.layer(name) in an
+  // expression could find the wrong one.
+  R.nameClash = function (layer) {
+    var c = layer.containingComp;
+    for (var i = 1; i <= c.numLayers; i++) if (c.layer(i).name === layer.name && c.layer(i).index !== layer.index) return true;
+    return false;
+  };
+
+  // "Name", "Name 2"... a layer name the comp doesn't have yet.
+  R.layerName = function (comp, base) {
+    return U.uniqueName(base, function (n) { return !!comp.layers.byName(n); });
+  };
+  return R;
 })();
 
 // ---- src/core/40_registry.js
@@ -2896,6 +3125,446 @@ MK.layoutDialog = (function () {
   });
 })();
 
+// ---- src/tools/animate/cloneKeys.js
+// Clone Keys to Playhead: copies the selected keyframes of every selected property to the
+// current time with everything they carry (value, temporal and spatial ease, interpolation,
+// roving, spatial tangents). One offset for all properties, from the earliest selected key
+// overall, so relative timing is kept across properties. Keys already at a target time are
+// replaced. The originals stay selected; the clones aren't.
+
+(function () {
+  var NAME = "Clone Keys to Playhead";
+
+  MK.registerTool({
+    id: "cloneKeys",
+    name: NAME,
+    category: "Animate",
+    description: "Copies the selected keyframes to the playhead, keeping their timing across properties.",
+    // Two keyframe diamonds and a vertical playhead (the playhead).
+    icon: [
+      "P5.5 13 3.6 4 0",
+      "P12 13 3.6 4 0",
+      { d: "M18.5 6 V22", stroke: "accent", w: 1.8 },
+      { d: "M15.5 2.5 H21.5 L18.5 6.5 Z", fill: "accent" }
+    ],
+    run: function (ctx) {
+      var props = MK.anim.withSelectedKeys(ctx.props);
+      if (!props.length) ctx.fail("select the keyframes to clone.");
+      // Read everything first: clones may land on the selected keys themselves.
+      var sets = [], t0 = Infinity, n = 0;
+      for (var i = 0; i < props.length; i++) {
+        sets.push(MK.keys.readSelected(props[i]));
+        t0 = Math.min(t0, sets[i][0].time);
+      }
+      var offset = ctx.time - t0;
+      if (Math.abs(offset) < 1e-6) return ctx.done(NAME + ": the earliest selected keyframe is already at the playhead, so there is nothing to clone.");
+      for (var j = 0; j < props.length; j++) {
+        for (var k = 0; k < sets[j].length; k++) sets[j][k].selected = false;
+        n += MK.anim.writeAll(props[j], sets[j], function (key) { return key.time + offset; });
+      }
+      return ctx.done(NAME + ": cloned " + n + (n === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property" : " properties") +
+        " to " + (Math.round(ctx.time * 1000) / 1000) + " s.");
+    }
+  });
+})();
+
+// ---- src/tools/animate/easeCopy.js
+// Ease Copy: the first click copies the first selected keyframe (value, in and out temporal
+// ease, interpolation types) and its property's expression into the settings; later clicks
+// paste them onto every selected keyframe of every selected property, until the clipboard is
+// cleared (Shift-click > Clear Clipboard). Eases pasted onto a property with another number of
+// ease dimensions reuse the first dimension's ease; values only paste onto the same value type.
+
+(function () {
+  var NAME = "Ease Copy", KEY = "easeCopy", U = MK.util, BEZ = KeyframeInterpolationType.BEZIER;
+
+  function clip() {
+    var c = MK.settings.get(KEY, null);
+    return c && typeof c === "object" && U.isArray(c.inEase) && U.isArray(c.outEase) ? c : null;
+  }
+  function describe(c) { return c ? "keyframe " + c.key + " of " + c.from : "empty"; }
+
+  function copy(ctx, props) {
+    var p = props[0], i = MK.sel.selectedKeys(p)[0], k = MK.keys.read(p, i);
+    MK.settings.set(KEY, {
+      from: MK.sel.label(p), key: i, valueType: p.propertyValueType,
+      // Values of numbers, points and colours only: other types don't survive JSON.
+      value: MK.sel.isNumeric(p) ? k.value : null,
+      inEase: k.inEase, outEase: k.outEase, inInterp: k.inInterp, outInterp: k.outInterp,
+      expression: p.canSetExpression ? String(p.expression || "") : ""
+    });
+    var more = props.length > 1 ? " (keyframes were selected on " + props.length + " properties; this is the first)" : "";
+    return ctx.done(NAME + ": copied " + describe(clip()) + more + ". Click again to paste onto selected keyframes.");
+  }
+
+  function paste(ctx, c, o, props) {
+    var keys = 0, wrongType = 0, noInterp = 0, exprs = 0;
+    for (var n = 0; n < props.length; n++) {
+      var p = props[n], sel = MK.sel.selectedKeys(p);
+      var canEase = p.isInterpolationTypeValid(BEZ);
+      var canInterp = p.isInterpolationTypeValid(c.inInterp) && p.isInterpolationTypeValid(c.outInterp);
+      var sameType = c.value !== null && c.value !== undefined && p.propertyValueType === c.valueType;
+      if (o.values && !sameType) wrongType++;
+      if (o.interp && !canInterp) noInterp++;
+      for (var j = 0; j < sel.length; j++) {
+        var i = sel[j], inT = p.keyInInterpolationType(i), outT = p.keyOutInterpolationType(i);
+        if (o.values && sameType) p.setValueAtKey(i, c.value);
+        if (o.easing && canEase) MK.keys.setEase(p, i, c.inEase, c.outEase);
+        if (o.interp && canInterp) p.setInterpolationTypeAtKey(i, c.inInterp, c.outInterp);
+        // setTemporalEaseAtKey makes both sides Bezier: without Interpolation, put the types back.
+        else if (o.easing && canEase) p.setInterpolationTypeAtKey(i, inT, outT);
+        keys++;
+      }
+      if (o.expression && c.expression && p.canSetExpression) {
+        p.expression = c.expression;
+        exprs++;
+      }
+    }
+    var what = U.filter([o.values && "values", o.easing && "easing", o.interp && "interpolation", o.expression && "expression"], function (x) { return !!x; });
+    var msg = NAME + ": pasted " + what.join(", ") + " onto " + keys + (keys === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
+    if (wrongType) msg += " Values skipped on " + wrongType + " of another type.";
+    if (noInterp) msg += " Interpolation skipped on " + noInterp + " that can't take it.";
+    if (o.expression && !c.expression) msg += " The copied property had no expression.";
+    else if (o.expression && exprs < props.length) msg += " " + (props.length - exprs) + " can't take an expression.";
+    return ctx.done(msg);
+  }
+
+  // The options dialog's clipboard line: what is copied, and a button that clears it.
+  function clipboardField(group) {
+    var row = MK.widgets.row(group);
+    var text = row.add("statictext", undefined, "");
+    text.preferredSize = [220, -1];
+    var btn = row.add("button", undefined, "Clear Clipboard");
+    function show() {
+      text.text = "Copied: " + describe(clip());
+      btn.enabled = !!clip();
+    }
+    btn.onClick = function () {
+      MK.settings.set(KEY, null);
+      show();
+    };
+    show();
+    return { button: btn, text: text, get: function () { return 0; }, set: function () {} };
+  }
+
+  MK.registerTool({
+    id: "easeCopy",
+    name: NAME,
+    category: "Animate",
+    description: "First click copies a keyframe's ease and interpolation; later clicks paste them onto selected keyframes.",
+    // An S-curve on a card behind a second card (the front card's corner).
+    icon: [
+      "M11 16 H2 V2 H16 V11",
+      "M4.5 13.5 C9 13.5 9 4.5 13.5 4.5",
+      "U11 11 11 11 1.5",
+      { d: "M22 16.5 V22 H16.5 Z", fill: "accent" }
+    ],
+    dot: function () { return !!clip(); },
+    options: [
+      { key: "values", label: "Paste values (same value type only)", type: "checkbox", "default": false },
+      { key: "easing", label: "Paste easing", type: "checkbox", "default": true },
+      { key: "interp", label: "Paste interpolation type", type: "checkbox", "default": true },
+      { key: "expression", label: "Paste the expression", type: "checkbox", "default": false },
+      { key: "clipboard", label: "Clipboard", type: "custom", "default": 0, build: clipboardField, validate: function () { return 0; } }
+    ],
+    run: function (ctx, o) {
+      var props = MK.anim.withSelectedKeys(ctx.props), c = clip();
+      if (!c) {
+        if (!props.length) ctx.fail("select a keyframe to copy its ease and interpolation from.");
+        return copy(ctx, props);
+      }
+      if (!props.length) ctx.fail("select keyframes to paste onto (copied: " + describe(c) + "; Shift-click to clear it).");
+      if (!o.values && !o.easing && !o.interp && !o.expression) ctx.fail("turn on at least one of Values, Easing, Interpolation or Expression (Shift-click).");
+      return paste(ctx, c, o, props);
+    }
+  });
+})();
+
+// ---- src/tools/animate/easeKeys.js
+// Ease Keyframes: temporal ease on the selected keyframes, set in a curve editor.
+//
+// The editor shows one segment as a normalised cubic Bezier, as CSS cubic-bezier(x1, y1, x2, y2)
+// does: time and value both run 0..1. For a segment from key A to key B with average speed
+// avg = (B - A) / (tB - tA), the eases of A (out) and B (in) map to it as
+//   x1 = out influence / 100          y1 = x1 * out speed / avg
+//   x2 = 1 - in influence / 100       y2 = 1 - (1 - x2) * in speed / avg
+// so the options keep the influences (0.1..100 %) and each speed as a multiple of the average
+// speed. y stays within 0..1 (speed <= 100 / influence): temporal ease can't overshoot.
+//
+// Apply: on each selected key, the outgoing ease (all but the last selected key) and the
+// incoming ease (all but the first) become KeyframeEase(multiple * average speed of that
+// segment, influence) per dimension, and those sides become Bezier. A lone selected key gets both.
+
+(function () {
+  var NAME = "Ease Keyframes", U = MK.util, A = MK.anim, BEZ = KeyframeInterpolationType.BEZIER;
+  var KEYS = ["outInfluence", "outSpeed", "inInfluence", "inSpeed"];
+  var PRESETS = [
+    ["Linear", [33.333, 1, 33.333, 1]],
+    ["Ease In (slow start)", [33.333, 0, 33.333, 1]],
+    ["Ease Out (slow end)", [33.333, 1, 33.333, 0]],
+    ["Ease In-Out (33 %)", [33.333, 0, 33.333, 0]],
+    ["Strong In-Out (75 %)", [75, 0, 75, 0]],
+    ["Snappy Out (out 90 %, in 15 %)", [90, 0, 15, 0]]
+  ];
+  // The curve editor: size, inner padding (the unit square sits inside it) and grab radius, in px.
+  var GW = 220, GH = 140, PAD = 12, GRAB = 12;
+
+  // Influences into 0.1..100, speeds into 0..100 / influence (no overshoot).
+  function norm(o) {
+    var r = {};
+    for (var i = 0; i < 4; i += 2) {
+      var inf = U.clamp(U.isNum(Number(o[KEYS[i]])) ? Number(o[KEYS[i]]) : 33.333, 0.1, 100);
+      var sp = Number(o[KEYS[i + 1]]);
+      r[KEYS[i]] = inf;
+      r[KEYS[i + 1]] = U.clamp(U.isNum(sp) ? sp : 0, 0, 100 / inf);
+    }
+    return r;
+  }
+  function fromList(a) { return norm({ outInfluence: a[0], outSpeed: a[1], inInfluence: a[2], inSpeed: a[3] }); }
+  // [x1, y1, x2, y2] of the normalised curve, and back.
+  function handles(o) {
+    var x1 = o.outInfluence / 100, k2 = o.inInfluence / 100;
+    return [x1, x1 * o.outSpeed, 1 - k2, 1 - k2 * o.inSpeed];
+  }
+  function fromHandles(h) {
+    var x1 = U.clamp(h[0], 0.001, 1), y1 = U.clamp(h[1], 0, 1), k2 = 1 - U.clamp(h[2], 0, 0.999), y2 = U.clamp(h[3], 0, 1);
+    return norm({ outInfluence: x1 * 100, outSpeed: y1 / x1, inInfluence: k2 * 100, inSpeed: (1 - y2) / k2 });
+  }
+  function eases(avg, multiple, influence) {
+    return U.map(avg, function (v) { return new KeyframeEase(v * multiple, influence); });
+  }
+  function usable(p) { return MK.sel.isNumeric(p) && p.numKeys >= 2 && p.isInterpolationTypeValid(BEZ); }
+
+  // The eases of the first selected key that has a key after it, as editor values, or a message.
+  function fromSelection() {
+    var comp = MK.sel.comp();
+    var props = comp ? U.filter(A.withSelectedKeys(MK.sel.props(comp)), usable) : [];
+    for (var n = 0; n < props.length; n++) {
+      var p = props[n], sel = MK.sel.selectedKeys(p);
+      for (var j = 0; j < sel.length; j++) {
+        var i = sel[j];
+        if (i >= p.numKeys) continue;
+        var avg = A.avgSpeed(p, i, i + 1), oe = p.keyOutTemporalEase(i), ie = p.keyInTemporalEase(i + 1), d = 0;
+        while (d < avg.length - 1 && Math.abs(avg[d]) < 1e-9) d++;
+        var ratio = function (s) { return Math.abs(avg[d]) < 1e-9 ? (Math.abs(s) < 1e-9 ? 0 : 1) : s / avg[d]; };
+        return norm({ outInfluence: oe[d].influence, outSpeed: ratio(oe[d].speed), inInfluence: ie[d].influence, inSpeed: ratio(ie[d].speed) });
+      }
+    }
+    return "select a keyframe that has another keyframe after it.";
+  }
+
+  function fmt(v, places) { var m = Math.pow(10, places); return String(Math.round(v * m) / m); }
+
+  // The dialog, built but not shown. Returns its controller; tests drive it headless.
+  function build() {
+    var W = MK.widgets, tool = MK.tools.easeKeys;
+    var ctl = { st: norm(MK.options.get(tool)), drag: null, action: null, filling: false, fields: {} };
+    var win = new Window("dialog", MK.NAME + ": " + NAME);
+    win.orientation = "column";
+    win.alignChildren = ["fill", "top"];
+    win.spacing = 8;
+    win.margins = 14;
+    ctl.win = win;
+    var top = W.row(win);
+    top.alignChildren = ["left", "top"];
+    top.spacing = 12;
+
+    var graph = top.add("group");
+    graph.preferredSize = [GW, GH];
+    graph.helpTip = "Drag the two handles: across is influence, up is speed. The grey line is linear.";
+    ctl.graph = graph;
+    // Pixel position of a point of the unit square, and back.
+    ctl.toPx = function (x, y) { return [PAD + x * (GW - 2 * PAD), GH - PAD - y * (GH - 2 * PAD)]; };
+    ctl.handlePx = function (n) {
+      var h = handles(ctl.st);
+      return n === 1 ? ctl.toPx(h[0], h[1]) : ctl.toPx(h[2], h[3]);
+    };
+    ctl.pick = function (px, py) {
+      var best = null, bd = GRAB;
+      for (var n = 1; n <= 2; n++) {
+        var d = MK.ui.dist([px, py], ctl.handlePx(n));
+        if (d <= bd) { best = n; bd = d; }
+      }
+      return best;
+    };
+    ctl.dragTo = function (n, px, py) {
+      var h = handles(ctl.st), x = (px - PAD) / (GW - 2 * PAD), y = (GH - PAD - py) / (GH - 2 * PAD);
+      if (n === 1) { h[0] = x; h[1] = y; } else { h[2] = x; h[3] = y; }
+      ctl.set(fromHandles(h));
+    };
+    graph.onDraw = function () { draw(this.graphics, ctl); };
+    // Same pattern as the panel grid: press picks a handle, moves drag it, a release outside ends it.
+    graph.addEventListener("mousedown", function (e) {
+      if (e.target === graph) ctl.drag = ctl.pick(e.clientX, e.clientY);
+    });
+    graph.addEventListener("mousemove", function (e) {
+      if (ctl.drag && e.target === graph) ctl.dragTo(ctl.drag, e.clientX, e.clientY);
+    });
+    graph.addEventListener("mouseup", function (e) {
+      if (ctl.drag && e.target === graph) ctl.dragTo(ctl.drag, e.clientX, e.clientY);
+      ctl.drag = null;
+    });
+    win.addEventListener("mouseup", function (e) { if (e.target !== graph) ctl.drag = null; });
+
+    var side = top.add("group");
+    side.orientation = "column";
+    side.alignChildren = ["left", "top"];
+    side.spacing = 5;
+    var pr = W.row(side);
+    W.label(pr, "Preset:", 86);
+    ctl.presets = pr.add("dropdownlist", undefined, ["Custom"].concat(U.map(PRESETS, function (p) { return p[0]; })));
+    ctl.presets.onChange = function () {
+      if (ctl.filling || !ctl.presets.selection || ctl.presets.selection.index < 1) return;
+      ctl.set(fromList(PRESETS[ctl.presets.selection.index - 1][1]));
+    };
+    var labels = ["Out influence", "Out speed", "In influence", "In speed"];
+    var units = ["%  (0.1 to 100)", "x average speed", "%  (0.1 to 100)", "x average speed"];
+    for (var i = 0; i < 4; i++) {
+      var r = W.row(side);
+      W.label(r, labels[i] + ":", 86);
+      var et = r.add("edittext", undefined, "");
+      et.characters = 7;
+      et.mkKey = KEYS[i];
+      et.onChange = function () {
+        var t = U.trim(this.text), v = Number(t), o = U.clone(ctl.st);
+        if (t !== "" && U.isNum(v)) o[this.mkKey] = v;
+        ctl.set(o);
+      };
+      W.label(r, units[i]).enabled = false;
+      ctl.fields[KEYS[i]] = et;
+    }
+    ctl.readout = side.add("statictext", undefined, "cubic-bezier(0.000, 0.000, 0.000, 0.000)");
+    ctl.readout.helpTip = "The curve as CSS cubic-bezier(x1, y1, x2, y2)";
+    var br = W.row(side);
+    ctl.btnCopy = br.add("button", undefined, "Copy from Selected Key");
+    ctl.btnCopy.helpTip = "Reads the ease between the first selected keyframe and the next one";
+    ctl.btnReset = br.add("button", undefined, "Reset");
+    ctl.btnCopy.onClick = function () {
+      var r = fromSelection();
+      if (typeof r === "string") MK.prompts.alert(NAME + ": " + r);
+      else ctl.set(r);
+    };
+    ctl.btnReset.onClick = function () { ctl.set(norm(MK.options.defaults(tool))); };
+
+    var btns = win.add("group");
+    btns.alignment = ["right", "top"];
+    var cancel = btns.add("button", undefined, "Cancel", { name: "cancel" });
+    ctl.btnSave = btns.add("button", undefined, "Save", { name: "save" });
+    ctl.btnApply = btns.add("button", undefined, "Apply", { name: "ok" });
+    ctl.btnSave.helpTip = "Keep this ease without applying it";
+    ctl.btnApply.helpTip = "Keep this ease and apply it to the selected keyframes";
+    function commit(action) {
+      var s = MK.options.save(tool, ctl.st);
+      if (!s.ok) { MK.prompts.alert(s.errors.join("\n")); return; }
+      ctl.action = action;
+      win.close(1);
+    }
+    ctl.btnApply.onClick = function () { commit("run"); };
+    ctl.btnSave.onClick = function () { commit("save"); };
+    cancel.onClick = function () { ctl.action = null; win.close(2); };
+    win.defaultElement = ctl.btnApply;
+    win.cancelElement = cancel;
+
+    ctl.set = function (o) {
+      ctl.st = norm(o);
+      ctl.filling = true;
+      for (var k = 0; k < 4; k++) ctl.fields[KEYS[k]].text = fmt(ctl.st[KEYS[k]], k % 2 ? 3 : 2);
+      var h = handles(ctl.st);
+      ctl.readout.text = "cubic-bezier(" + U.map(h, function (v) { return (Math.round(v * 1000) / 1000).toFixed(3); }).join(", ") + ")";
+      var pick = 0;
+      for (var p = 0; p < PRESETS.length; p++) {
+        var q = fromList(PRESETS[p][1]), same = true;
+        for (var m = 0; m < 4; m++) if (Math.abs(q[KEYS[m]] - ctl.st[KEYS[m]]) > 0.01) same = false;
+        if (same) pick = p + 1;
+      }
+      ctl.presets.selection = pick;
+      ctl.filling = false;
+    };
+    ctl.set(ctl.st);
+    return ctl;
+  }
+
+  function draw(g, ctl) {
+    var rgba = U.rgba;
+    var line = function (pts, hex, w, alpha) {
+      g.newPath();
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (var i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+      g.strokePath(g.newPen(g.PenType.SOLID_COLOR, rgba(hex, alpha), w));
+    };
+    g.newPath();
+    g.rectPath(0, 0, GW, GH);
+    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, rgba("#1E1E1E")));
+    for (var q = 0; q <= 4; q++) {
+      line([ctl.toPx(q / 4, 0), ctl.toPx(q / 4, 1)], "#303030", 1);
+      line([ctl.toPx(0, q / 4), ctl.toPx(1, q / 4)], "#303030", 1);
+    }
+    line([ctl.toPx(0, 0), ctl.toPx(1, 1)], "#4A4A4A", 1);
+    var h = handles(ctl.st), p0 = ctl.toPx(0, 0), p3 = ctl.toPx(1, 1), p1 = ctl.toPx(h[0], h[1]), p2 = ctl.toPx(h[2], h[3]);
+    var accent = MK.ACCENTS.Animate;
+    line([p0, p1], accent, 1, 0.8);
+    line([p3, p2], accent, 1, 0.8);
+    line([p0].concat(MK.icons.geom.cubic(p0, p1, p2, p3, 40)), "#D8D8D8", 2);
+    var dots = [p1, p2];
+    for (var n = 0; n < 2; n++) {
+      g.newPath();
+      g.ellipsePath(dots[n][0] - 5, dots[n][1] - 5, 10, 10);
+      g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, rgba(ctl.drag === n + 1 ? "#FFFFFF" : accent)));
+    }
+  }
+
+  MK.registerTool({
+    id: "easeKeys",
+    name: NAME,
+    category: "Animate",
+    description: "Sets the ease of the selected keyframes from a curve: influence and speed, or a preset.",
+    // An S-curve on axes (the two handles).
+    icon: [
+      "M3 3 V21 H21",
+      "M6 18 C13 18 11 6 19 6",
+      { d: "M6 18 L12.5 18 M19 6 L11.5 6", stroke: "accent", w: 1 },
+      { d: "O12.5 18 1.9", fill: "accent" },
+      { d: "O11.5 6 1.9", fill: "accent" }
+    ],
+    options: [
+      { key: "outInfluence", label: "Out influence", type: "number", "default": 33.333, min: 0.1, max: 100, unit: "%" },
+      { key: "outSpeed", label: "Out speed", type: "number", "default": 0, min: 0, max: 1000, help: "Leaving speed as a multiple of the segment's average speed (0 eases fully, 1 is linear)" },
+      { key: "inInfluence", label: "In influence", type: "number", "default": 33.333, min: 0.1, max: 100, unit: "%" },
+      { key: "inSpeed", label: "In speed", type: "number", "default": 0, min: 0, max: 1000, help: "Arriving speed as a multiple of the segment's average speed" }
+    ],
+    // The curve editor replaces the generated options dialog. openOptions(true) only builds it.
+    openOptions: function (headless) {
+      var ctl = build();
+      if (headless) return ctl;
+      ctl.win.show();
+      return ctl.action === "run" ? MK.run("easeKeys") : null;
+    },
+    run: function (ctx, o) {
+      var e = norm(o), withKeys = A.withSelectedKeys(ctx.props), props = U.filter(withKeys, usable);
+      if (!props.length) ctx.fail("select keyframes on one or more properties with at least two keyframes (numbers, points or colours).");
+      var count = 0;
+      for (var n = 0; n < props.length; n++) {
+        var p = props[n], sel = MK.sel.selectedKeys(p);
+        for (var j = 0; j < sel.length; j++) {
+          var i = sel[j], lone = sel.length === 1;
+          var doOut = (lone || j < sel.length - 1) && i < p.numKeys, doIn = (lone || j > 0) && i > 1;
+          if (!doOut && !doIn) continue;
+          var inT = p.keyInInterpolationType(i), outT = p.keyOutInterpolationType(i);
+          var inE = doIn ? eases(A.avgSpeed(p, i - 1, i), e.inSpeed, e.inInfluence) : p.keyInTemporalEase(i);
+          var outE = doOut ? eases(A.avgSpeed(p, i, i + 1), e.outSpeed, e.outInfluence) : p.keyOutTemporalEase(i);
+          p.setTemporalEaseAtKey(i, inE, outE);
+          // setTemporalEaseAtKey makes both sides Bezier; the side left alone keeps its type.
+          p.setInterpolationTypeAtKey(i, doIn ? BEZ : inT, doOut ? BEZ : outT);
+          count++;
+        }
+      }
+      var msg = NAME + ": eased " + count + (count === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
+      if (withKeys.length > props.length) msg += " Skipped " + (withKeys.length - props.length) + " that can't ease (one keyframe, or not a number).";
+      return ctx.done(msg);
+    }
+  });
+})();
+
 // ---- src/tools/animate/elastic.js
 // Elastic: after the last keyframe the value overshoots and wobbles back with a damped sine,
 //   value + v * Amplitude * sin(2 pi Frequency t) / exp(Decay t)
@@ -2958,6 +3627,105 @@ MK.layoutDialog = (function () {
   });
 })();
 
+// ---- src/tools/animate/fixKeys.js
+// Fix Keys Time: moves keyframes that sit between frames onto the nearest frame of the comp
+// (keyframe times are comp time, so the layer's start time counts). Each moved key is rebuilt
+// with its value, eases, interpolation and tangents. Keys ending on the same frame merge and
+// the later one (by original time) wins. Roving keys stay: EffectCraft times them itself.
+
+(function () {
+  var NAME = "Fix Keys Time", U = MK.util, A = MK.anim, K = MK.keys, EPS = 1e-5;
+
+  // Every property with keyframes under a layer or group.
+  function keyedIn(group, out, depth) {
+    for (var i = 1; depth < 64 && i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) keyedIn(p, out, depth + 1);
+      else if (p instanceof Property && p.numKeys > 0) out.push(p);
+    }
+    return out;
+  }
+
+  function allKeys(p) {
+    var a = [];
+    for (var i = 1; i <= p.numKeys; i++) a.push(i);
+    return a;
+  }
+
+  // Snaps keys `indices` of prop to the frame grid. Returns {moved, merged}.
+  function fix(prop, indices, fd) {
+    var all = K.readAll(prop), inScope = {}, r = { moved: 0, merged: 0 }, remove = [], write = [];
+    for (var s = 0; s < indices.length; s++) inScope[indices[s]] = true;
+    var groups = {}, order = [];
+    for (var i = 0; i < all.length; i++) {
+      var k = all[i], snap = Math.round(k.time / fd) * fd;
+      k.moved = !!inScope[i + 1] && !k.roving && Math.abs(snap - k.time) > EPS;
+      k.to = k.moved ? snap : k.time;
+      var g = k.to.toFixed(5);
+      if (!groups[g]) { groups[g] = []; order.push(g); }
+      groups[g].push(i);
+    }
+    for (var n = 0; n < order.length; n++) {
+      var grp = groups[order[n]], movers = U.filter(grp, function (j) { return all[j].moved; });
+      if (!movers.length) continue;
+      // Keys are in time order, so the group's last key is the latest.
+      var win = all[grp[grp.length - 1]];
+      r.moved += movers.length;
+      r.merged += grp.length - 1;
+      for (var m = 0; m < grp.length; m++) if (win.moved || all[grp[m]].moved) remove.push(grp[m] + 1);
+      if (win.moved) write.push(win);
+    }
+    K.remove(prop, remove);
+    for (var w = 0; w < write.length; w++) A.write(prop, write[w], write[w].to);
+    return r;
+  }
+
+  MK.registerTool({
+    id: "fixKeys",
+    name: NAME,
+    category: "Animate",
+    description: "Snaps keyframes that sit between frames onto the nearest frame.",
+    // A diamond snapping onto a tick ruler (the target tick).
+    icon: [
+      "P13.5 7.5 4 4 0",
+      "M2 21 H22",
+      "M4 21 V18.5 M8.5 21 V18.5 M18 21 V18.5",
+      { d: "M13.5 21 V15", stroke: "accent", w: 2 }
+    ],
+    options: [
+      {
+        key: "scope", label: "Keyframes", type: "dropdown", "default": "auto",
+        items: [["auto", "What's selected: keyframes, else properties, else layers"], ["keys", "The selected keyframes"],
+          ["props", "All keyframes of the selected properties"], ["layers", "All keyframes of the selected layers"]]
+      }
+    ],
+    run: function (ctx, o) {
+      var withSel = A.withSelectedKeys(ctx.props), keyed = MK.sel.keyed(ctx.props, 1), scope = o.scope, jobs = [];
+      if (scope === "auto") scope = withSel.length ? "keys" : keyed.length ? "props" : "layers";
+      if (scope === "keys") jobs = U.map(withSel, function (p) { return { prop: p, keys: MK.sel.selectedKeys(p) }; });
+      else if (scope === "props") jobs = U.map(keyed, function (p) { return { prop: p, keys: allKeys(p) }; });
+      else {
+        for (var l = 0; l < ctx.layers.length; l++) {
+          var ps = keyedIn(ctx.layers[l], [], 0);
+          for (var q = 0; q < ps.length; q++) jobs.push({ prop: ps[q], keys: allKeys(ps[q]) });
+        }
+      }
+      if (!jobs.length) ctx.fail(scope === "keys" ? "select keyframes." : scope === "props" ? "select properties with keyframes." : "select layers with keyframes.");
+      var moved = 0, merged = 0, total = 0, touched = 0;
+      for (var j = 0; j < jobs.length; j++) {
+        var r = fix(jobs[j].prop, jobs[j].keys, ctx.frame);
+        moved += r.moved;
+        merged += r.merged;
+        total += jobs[j].keys.length;
+        if (r.moved) touched++;
+      }
+      if (!moved) return ctx.done(NAME + ": all " + total + " keyframes are already on frames.");
+      return ctx.done(NAME + ": moved " + moved + (moved === 1 ? " keyframe" : " keyframes") + " onto frames on " + touched + (touched === 1 ? " property" : " properties") +
+        (merged ? " (" + merged + " merged with a key on the same frame)" : "") + ".");
+    }
+  });
+})();
+
 // ---- src/tools/animate/loop.js
 // Loop In/Out: a loopOut / loopIn expression on the selected keyframed properties. "Both" uses
 // loopIn before the first key and loopOut after the last. Motion Kit expressions are replaced;
@@ -3005,6 +3773,1199 @@ MK.layoutDialog = (function () {
       return ctx.done(MK.expr.report(NAME, r.applied.length, ctx.props.length - props.length, r.skipped.length, numericOnly ? "two keyframes and a numeric value" : "two keyframes"));
     }
   });
+})();
+
+// ---- src/tools/animate/sequencer.js
+// Sequencer: staggers the selected layers (their start times) or the selected keyframes of each
+// layer (moved together, spacing kept). Items are put in order (top to bottom, bottom to top,
+// seeded random, or selection order); with n items the span is step * (n - 1) frames and item i
+// sits span * curve(i / (n - 1)) frames, rounded to whole frames, after the first one, which
+// keeps its time. A layer's time is its in-point; a keyframe item's time is its earliest
+// selected keyframe.
+
+(function () {
+  var NAME = "Sequencer", U = MK.util, A = MK.anim;
+  var CURVES = {
+    linear: function (t) { return t; },
+    easeIn: function (t) { return t * t; },
+    easeOut: function (t) { return 1 - (1 - t) * (1 - t); },
+    easeInOut: function (t) { return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); }
+  };
+  var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", random: "random", selection: "selection order" };
+
+  // Fisher-Yates with the Park-Miller generator (exact in doubles), so a seed always gives the
+  // same order.
+  function shuffle(a, seed) {
+    var s = Math.floor(Math.abs(seed)) % 2147483646 + 1, out = a.slice();
+    for (var i = out.length - 1; i > 0; i--) {
+      s = s * 16807 % 2147483647;
+      var j = Math.floor((s - 1) / 2147483646 * (i + 1)), t = out[i];
+      out[i] = out[j];
+      out[j] = t;
+    }
+    return out;
+  }
+
+  // [{layer, time, props}] in selection order.
+  function items(ctx, mode) {
+    if (mode === "layers") return U.map(ctx.layers, function (l) { return { layer: l, time: l.inPoint, props: [] }; });
+    var out = [], seen = {}, props = A.withSelectedKeys(ctx.props);
+    for (var n = 0; n < props.length; n++) {
+      var p = props[n], l = MK.sel.layerOf(p), k = "L" + l.index;
+      if (!seen[k]) out.push(seen[k] = { layer: l, time: Infinity, props: [] });
+      seen[k].props.push(p);
+      seen[k].time = Math.min(seen[k].time, p.keyTime(MK.sel.selectedKeys(p)[0]));
+    }
+    return out;
+  }
+
+  // The seed field: a number and a Reseed button.
+  function seedField(group, value) {
+    var row = MK.widgets.row(group);
+    var et = row.add("edittext", undefined, String(value));
+    et.characters = 8;
+    et.helpTip = "The same seed always gives the same random order";
+    var btn = row.add("button", undefined, "Reseed");
+    btn.onClick = function () { et.text = String(1 + Math.floor(Math.random() * 99999)); };
+    return { edit: et, button: btn, get: function () { return et.text; }, set: function (v) { et.text = String(v); } };
+  }
+
+  MK.registerTool({
+    id: "sequencer",
+    name: NAME,
+    category: "Animate",
+    description: "Staggers the selected layers, or each layer's selected keyframes, a few frames apart.",
+    // Four staggered horizontal bars (the first bar).
+    icon: [
+      { d: "U2 3.5 9 3 1", fill: "accent" },
+      "U6 8.5 9 3 1",
+      "U10 13.5 9 3 1",
+      "U13 18.5 9 3 1"
+    ],
+    options: [
+      { key: "mode", label: "Mode", type: "dropdown", "default": "layers", items: [["layers", "Layers: move their start times"], ["keys", "Keyframes: move each layer's selected keys"]] },
+      { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["random", "Random"], ["selection", "Selection order"]] },
+      {
+        key: "seed", label: "Random seed", type: "custom", "default": 1, build: seedField,
+        validate: function (v) {
+          var n = Number(v);
+          if (v === "" || v === null || !U.isNum(n)) MK.fail("Random seed must be a whole number.");
+          return Math.round(U.clamp(Math.abs(n), 0, 2147483646));
+        }
+      },
+      { key: "step", label: "Step", type: "number", "default": 2, min: -1000, max: 1000, unit: "frames", help: "Frames between items, negative or fractional too; the result is rounded to whole frames" },
+      { key: "curve", label: "Curve", type: "dropdown", "default": "linear", items: [["linear", "Linear"], ["easeIn", "Ease in"], ["easeOut", "Ease out"], ["easeInOut", "Ease in-out"]] }
+    ],
+    run: function (ctx, o) {
+      var list = items(ctx, o.mode), keys = o.mode === "keys";
+      if (list.length < 2) ctx.fail(keys ? "select keyframes on two or more layers." : "select two or more layers.");
+      for (var c = 0; c < list.length; c++) if (list[c].layer.locked) ctx.fail("unlock " + list[c].layer.name + " first.");
+      if (o.order !== "selection") list.sort(function (x, y) { return x.layer.index - y.layer.index; });
+      if (o.order === "bottomUp") list.reverse();
+      if (o.order === "random") list = shuffle(list, o.seed);
+      var n = list.length, span = o.step * (n - 1), base = list[0].time, curve = CURVES[o.curve], moved = 0;
+      for (var i = 1; i < n; i++) {
+        var it = list[i], delta = base + Math.round(span * curve(i / (n - 1))) * ctx.frame - it.time;
+        if (Math.abs(delta) < 1e-9) continue;
+        if (keys) {
+          for (var q = 0; q < it.props.length; q++) A.move(it.props[q], MK.sel.selectedKeys(it.props[q]), function (k) { return k.time + delta; });
+        } else it.layer.startTime = it.layer.startTime + delta;
+        moved++;
+      }
+      return ctx.done(NAME + ": placed " + n + (keys ? " layers' keyframes" : " layers") + " " + ORDER_TEXT[o.order] + ", " + o.step + " frames apart (" + o.curve + "); moved " + moved + ".");
+    }
+  });
+})();
+
+// ---- src/tools/comp/cropComp.js
+// Crop Comp: precomposes the selected layers into "<top layer> Crop", a comp just big enough for
+// what they show over their whole in-out range, and places it so nothing moves.
+// Bounds: the four sourceRectAtTime corners of each layer taken to comp space with the
+// expression engine's own toComp(point, t) (parents, 3D and expressions count) every N frames
+// from in to out. The loop runs inside one probe expression per chunk of frames, because a probe
+// per frame would be slow; expressions that run too long stop, so each chunk returns a marker.
+// Inside the new comp the unparented layers move by (-left, -top); in the parent comp the
+// precomp layer's anchor is the new comp's centre and its position is that centre in comp space.
+
+(function () {
+  var NAME = "Crop Comp", U = MK.util;
+  var CHUNK = 60; // frames per probe expression
+
+  function itemNamed(name) {
+    for (var i = 1; i <= app.project.numItems; i++) if (app.project.item(i).name === name) return true;
+    return false;
+  }
+
+  // Expression: the min (or max) comp x and y of the layer's rectangle corners at each time in
+  // `times`; z is 1 when the loop finished.
+  function boundsCode(times, max) {
+    var f = max ? "Math.max" : "Math.min", init = max ? "-Infinity" : "Infinity";
+    return [
+      "var mkX = " + init + ", mkY = " + init + ", mkT = [" + times.join(",") + "];",
+      "for (var mkI = 0; mkI < mkT.length; mkI++) {",
+      "  var mkR = L.sourceRectAtTime(mkT[mkI], false);",
+      "  var mkC = [[mkR.left, mkR.top], [mkR.left + mkR.width, mkR.top], [mkR.left + mkR.width, mkR.top + mkR.height], [mkR.left, mkR.top + mkR.height]];",
+      "  for (var mkK = 0; mkK < 4; mkK++) {",
+      "    var mkQ = L.toComp([mkC[mkK][0], mkC[mkK][1], 0], mkT[mkI]);",
+      "    mkX = " + f + "(mkX, mkQ[0]); mkY = " + f + "(mkY, mkQ[1]);",
+      "  }",
+      "}",
+      "[mkX, mkY, 1]"
+    ].join("\n");
+  }
+
+  // The layer's frame times inside the comp: every `step` frames from its in point, plus its
+  // last frame. Empty when it shows nothing inside the comp's duration.
+  function frameTimes(layer, comp, step) {
+    var fd = comp.frameDuration, t0 = Math.max(layer.inPoint, 0), t1 = Math.min(layer.outPoint, comp.duration);
+    var out = [];
+    if (!(t1 - t0 > 1e-9)) return out;
+    for (var t = t0; t < t1 - 1e-9; t += step * fd) out.push(t);
+    var last = Math.max(t0, t1 - fd);
+    if (out[out.length - 1] < last - 1e-9) out.push(last);
+    return out;
+  }
+
+  // [left, top, right, bottom] of the layer in comp space over `times`.
+  function layerBounds(layer, times) {
+    return MK.space.probe(layer, function (ev) {
+      var b = [Infinity, Infinity, -Infinity, -Infinity];
+      for (var i = 0; i < times.length; i += CHUNK) {
+        var part = times.slice(i, i + CHUNK);
+        var lo = ev(boundsCode(part, false), 0), hi = ev(boundsCode(part, true), 0);
+        if (lo[2] !== 1 || hi[2] !== 1 || !U.isNum(lo[0]) || !U.isNum(lo[1]) || !U.isNum(hi[0]) || !U.isNum(hi[1])) {
+          MK.fail("couldn't measure " + layer.name + " (its bounds expression didn't finish). Try a larger \"Sample every\" in the options.");
+        }
+        b = [Math.min(b[0], lo[0]), Math.min(b[1], lo[1]), Math.max(b[2], hi[0]), Math.max(b[3], hi[1])];
+      }
+      return b;
+    });
+  }
+
+  function shiftProp(p, d) {
+    function add(v) {
+      if (typeof v === "number") return v + d[0];
+      var o = [v[0] + d[0], v[1] + d[1]];
+      if (v.length > 2) o.push(v[2]);
+      return o;
+    }
+    if (p.numKeys) for (var k = 1; k <= p.numKeys; k++) p.setValueAtKey(k, add(p.keyValue(k)));
+    else p.setValue(add(p.value));
+  }
+
+  // Moves a layer by d in its comp, keys included (X and Y Position when separated).
+  function shiftLayer(layer, d) {
+    var tr = layer.transform, pos = tr.position;
+    if (pos.dimensionsSeparated) {
+      shiftProp(tr.property("ADBE Position_0"), [d[0]]);
+      shiftProp(tr.property("ADBE Position_1"), [d[1]]);
+    } else shiftProp(pos, d);
+    return !!(pos.expression || (pos.dimensionsSeparated && (tr.property("ADBE Position_0").expression || tr.property("ADBE Position_1").expression)));
+  }
+
+  MK.registerTool({
+    id: "cropComp",
+    name: NAME,
+    category: "Comp",
+    description: "Precomposes the selected layers into a comp cropped to their bounds, without moving them.",
+    // Crop marks around a frame (the corners).
+    icon: [
+      "R7 7 10 10",
+      { d: "M3 9 V3 H9 M15 3 H21 V9 M21 15 V21 H15 M9 21 H3 V15", stroke: "accent", w: 2 }
+    ],
+    options: [
+      { key: "padding", label: "Padding", type: "number", "default": 0, min: 0, max: 5000, unit: "px" },
+      { key: "even", label: "Round the size to even pixels", type: "checkbox", "default": true },
+      { key: "step", label: "Sample every", type: "number", "default": 1, min: 1, max: 1000, integer: true, unit: "frames", help: "How often the layers' bounds are measured between their in and out points." }
+    ],
+    run: function (ctx, o) {
+      var comp = ctx.comp, layers = MK.sel.byIndex(ctx.layers), i;
+      if (!layers.length) ctx.fail("select the layers to crop into a new comp.");
+      var ids = {};
+      for (i = 0; i < layers.length; i++) ids[layers[i].id] = true;
+      var times = [], visible = 0, threeD = false;
+      for (i = 0; i < layers.length; i++) {
+        var L = layers[i];
+        // Cameras, lights and nulls draw nothing.
+        times.push(L instanceof AVLayer && !L.nullLayer ? frameTimes(L, comp, o.step) : []);
+        if (times[i].length) visible++;
+        if (L.threeDLayer) threeD = true;
+      }
+      if (!visible) ctx.fail("none of the selected layers shows anything inside the comp's duration.");
+
+      // Precomposing drops parents outside the selection, so unparent those first (compensated
+      // at the current time, which is exact unless the parent is animated).
+      for (i = 0; i < layers.length; i++) {
+        var par = layers[i].parent;
+        if (par && !ids[par.id]) {
+          layers[i].parent = null;
+          ctx.warn(layers[i].name + " was parented to " + par.name + ", which isn't selected; it was unparented first" + (par.transform.position.numKeys || par.transform.rotation.numKeys || par.transform.scale.numKeys ? " and won't follow that parent's animation." : "."));
+        }
+      }
+
+      var b = [Infinity, Infinity, -Infinity, -Infinity];
+      for (i = 0; i < layers.length; i++) {
+        if (!times[i].length) continue;
+        var lb = layerBounds(layers[i], times[i]);
+        b = [Math.min(b[0], lb[0]), Math.min(b[1], lb[1]), Math.max(b[2], lb[2]), Math.max(b[3], lb[3])];
+      }
+      // Whole pixels, so the layers move by whole pixels and nothing is resampled.
+      var left = Math.floor(b[0] + 1e-6) - o.padding, top = Math.floor(b[1] + 1e-6) - o.padding;
+      var w = Math.ceil(b[2] - 1e-6) + o.padding - left, h = Math.ceil(b[3] - 1e-6) + o.padding - top;
+      if (o.even) {
+        w += w % 2;
+        h += h % 2;
+      }
+      w = U.clamp(w, 1, 30000);
+      h = U.clamp(h, 1, 30000);
+
+      var name = U.uniqueName(layers[0].name + " Crop", itemNamed);
+      var indices = U.map(layers, function (l) { return l.index; });
+      var pc = comp.layers.precompose(indices, name, true);
+      // anchor 0 (top left) keeps the layers where they are. The CompItem.width / height setters
+      // re-centre the layers in EffectCraft 0.14 (fixed later, #1942), so set the size this way.
+      app.run("comp.settings", { comp: pc.id, width: w, height: h, anchor: 0 });
+      w = pc.width;
+      h = pc.height;
+      var exprs = [];
+      for (i = 1; i <= pc.numLayers; i++) {
+        var inner = pc.layer(i);
+        if (!inner.parent && shiftLayer(inner, [-left, -top])) exprs.push(inner.name);
+      }
+      var pl = null;
+      for (i = 1; i <= comp.numLayers && !pl; i++) {
+        var c = comp.layer(i);
+        if (c instanceof AVLayer && c.source && c.source.id === pc.id) pl = c;
+      }
+      pl.transform.anchorPoint.setValue([w / 2, h / 2]);
+      pl.transform.position.setValue([left + w / 2, top + h / 2]);
+      ctx.created.push(pl);
+      ctx.created.push(pc);
+
+      if (exprs.length) ctx.warn("Position expressions on " + exprs.join(", ") + " were kept; if they set an absolute position, those layers moved by " + (-left) + ", " + (-top) + " px.");
+      if (threeD) ctx.warn("3D layers now render with the new comp's own default camera, so their perspective can differ.");
+      return ctx.done("Cropped " + layers.length + (layers.length === 1 ? " layer" : " layers") + " into \"" + pc.name + "\" (" + w + " x " + h + " px at " + left + ", " + top + ").");
+    }
+  });
+})();
+
+// ---- src/tools/comp/duplicateComp.js
+// Duplicate Comp: duplicates the comps selected in the Project panel (or the active comp).
+// Deep (default) also duplicates every nested precomp, once each however often it is used (a map
+// from comp id to copy, filled before recursing, also stops cycles), and points the copies' layers
+// at the copies with AVLayer.replaceSource. Copies are named "<name> 2", "<name> 3"... or
+// "<name><suffix>". Every expression in the copies that names a duplicated comp with
+// comp("<old name>") is rewritten to the copy's name.
+
+(function () {
+  var NAME = "Duplicate Comp", U = MK.util;
+
+  // True when an item other than `self` has the name.
+  function taken(name, self) {
+    for (var i = 1; i <= app.project.numItems; i++) {
+      var it = app.project.item(i);
+      if (it.name === name && it.id !== self.id) return true;
+    }
+    return false;
+  }
+
+  function newName(name, suffix, self) {
+    var base = suffix ? name + suffix : name;
+    if (suffix && !taken(base, self)) return base;
+    for (var i = 2; i < 100000; i++) if (!taken(base + " " + i, self)) return base + " " + i;
+    return base + " " + U.randomId(4);
+  }
+
+  // Layer.replaceSource needs EffectCraft's layer.replaceSource command (after 0.14).
+  function canReplaceSource() {
+    try {
+      var cmds = app.run("command.list", {});
+      for (var i = 0; i < cmds.length; i++) if (cmds[i].id === "layer.replaceSource") return true;
+    } catch (e) {}
+    return false;
+  }
+
+  // A replace() callback, so "$" in a comp name stays literal.
+  function literal(s) { return function () { return s; }; }
+
+  function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&"); }
+
+  // Rewrites comp("old") / comp('old') in every expression under `group`. Returns the count.
+  function rewrite(group, renames) {
+    var n = 0;
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) {
+        n += rewrite(p, renames);
+        continue;
+      }
+      if (!(p instanceof Property) || !p.canSetExpression || !p.expression) continue;
+      var e = p.expression, e2 = e;
+      for (var k = 0; k < renames.length; k++) e2 = e2.replace(renames[k].re, literal(renames[k].to));
+      if (e2 !== e) {
+        p.expression = e2;
+        n++;
+      }
+    }
+    return n;
+  }
+
+  MK.registerTool({
+    id: "duplicateComp",
+    name: NAME,
+    category: "Comp",
+    needsComp: false,
+    description: "Duplicates the selected comps (or the active comp), with their nested precomps, and fixes comp(\"name\") expressions.",
+    // Two stacked frames (the front frame).
+    icon: [
+      "M4 15 V4 H15",
+      "M7 18 V7 H18",
+      { d: "R10 10 11 11", stroke: "accent", w: 2 }
+    ],
+    options: [
+      { key: "deep", label: "Deep: also duplicate nested precomps", type: "checkbox", "default": true },
+      { key: "suffix", label: "Name suffix", type: "text", "default": "", maxLength: 100, help: "Empty names copies \"<name> 2\", \"<name> 3\"...; otherwise \"<name><suffix>\"." }
+    ],
+    run: function (ctx, o) {
+      var roots = U.filter(app.project.selection, function (it) { return it instanceof CompItem; });
+      if (!roots.length && ctx.comp) roots = [ctx.comp];
+      if (!roots.length) ctx.fail("select one or more comps in the Project panel, or open a comp.");
+      var deep = o.deep && canReplaceSource();
+      if (o.deep && !deep) ctx.warn("Nested precomps weren't duplicated: this EffectCraft has no Layer.replaceSource, so the copies still use the original precomps.");
+
+      var copies = {}, list = [], i;
+      function dup(c) {
+        if (U.has(copies, c.id)) return copies[c.id];
+        var d = c.duplicate();
+        d.name = newName(c.name, o.suffix, d);
+        copies[c.id] = d;
+        list.push({ from: c, to: d });
+        if (!deep) return d;
+        for (var j = 1; j <= d.numLayers; j++) {
+          var L = d.layer(j);
+          if (L instanceof AVLayer && L.source instanceof CompItem) {
+            var nd = dup(L.source);
+            if (nd.id !== L.source.id) L.replaceSource(nd, false);
+          }
+        }
+        return d;
+      }
+      for (i = 0; i < roots.length; i++) dup(roots[i]);
+
+      var renames = U.map(list, function (c) {
+        return { re: new RegExp("comp\\(\\s*([\"'])" + escapeRe(c.from.name) + "\\1\\s*\\)", "g"), to: "comp(" + JSON.stringify(c.to.name) + ")" };
+      });
+      var rewritten = 0;
+      for (i = 0; i < list.length; i++) {
+        var d = list[i].to;
+        for (var j = 1; j <= d.numLayers; j++) rewritten += rewrite(d.layer(j), renames);
+        ctx.created.push(d);
+      }
+      var nested = list.length - roots.length;
+      return ctx.done("Duplicated " + roots.length + (roots.length === 1 ? " comp" : " comps") +
+        (deep ? " and " + nested + (nested === 1 ? " nested precomp" : " nested precomps") : "") +
+        "; rewrote " + rewritten + (rewritten === 1 ? " expression." : " expressions."));
+    }
+  });
+})();
+
+// ---- src/tools/comp/gifExport.js
+// GIF Export: adds a render queue item with GIF output for each selected comp (or the active
+// comp) and renders them. Scale is the render settings' resolution, the frame rate and time span
+// are render settings too, and Loop is the GIF output module's loop flag, which the scripting
+// OutputModule doesn't expose, so it goes through app.run("renderQueue.setOutputModule").
+// Other queued items are switched off while rendering and switched back on after.
+
+(function () {
+  var NAME = "GIF Export", U = MK.util;
+
+  // An empty folder: the project's folder, else the Desktop. EffectCraft scripts get no Desktop
+  // path (Folder.desktop is null), so then a bare file name lets EffectCraft use its default
+  // output folder.
+  function folderOf(o) {
+    var f = U.trim(o.folder).replace(/[\/\\]+$/, "");
+    if (f) return f;
+    if (app.project.file) return app.project.file.path;
+    if (Folder.desktop) return Folder.desktop.fsName;
+    return "";
+  }
+
+  // Runs a settings change; EffectCraft refuses one that changes nothing, which is fine here.
+  function change(fn) {
+    try {
+      fn();
+    } catch (e) {
+      if (!/nothing to change/.test(String(e && e.message))) throw e;
+    }
+  }
+
+  MK.registerTool({
+    id: "gifExport",
+    name: NAME,
+    category: "Comp",
+    needsComp: false,
+    description: "Renders the selected comps (or the active comp) to animated GIFs.",
+    // A film strip with a play triangle (the triangle).
+    icon: [
+      "R3 5 18 14",
+      { d: "M6 5 V7.5 M10 5 V7.5 M14 5 V7.5 M18 5 V7.5 M6 16.5 V19 M10 16.5 V19 M14 16.5 V19 M18 16.5 V19", w: 1.4 },
+      { d: "M10 9 L15.5 12 L10 15 Z", fill: "accent" }
+    ],
+    options: [
+      { key: "scale", label: "Scale", type: "number", "default": 100, min: 1, max: 400, unit: "%" },
+      { key: "fps", label: "Frame rate", type: "number", "default": 0, min: 0, max: 100, unit: "fps", help: "0 uses each comp's frame rate." },
+      { key: "loop", label: "Loop", type: "dropdown", "default": "forever", items: [["forever", "Forever"], ["once", "Play once"]] },
+      { key: "workArea", label: "Work area only", type: "checkbox", "default": true },
+      { key: "folder", label: "Output folder", type: "text", "default": "", help: "Type a folder path (EffectCraft scripts can't show a folder picker). Empty: the project's folder, or EffectCraft's default output folder for an unsaved project." }
+    ],
+    run: function (ctx, o) {
+      var comps = U.filter(app.project.selection, function (it) { return it instanceof CompItem; });
+      if (!comps.length && ctx.comp) comps = [ctx.comp];
+      if (!comps.length) ctx.fail("select one or more comps in the Project panel, or open a comp.");
+      var rq = app.project.renderQueue, folder = folderOf(o), items = [], used = {}, i;
+      for (i = 0; i < comps.length; i++) {
+        var c = comps[i];
+        var base = String(c.name).replace(/[\\\/:*?"<>|]/g, "_"), file = base, n = 2;
+        while (U.has(used, file)) file = base + " " + n++;
+        used[file] = true;
+        var it = rq.items.add(c);
+        var idx = rq.numItems;
+        it.outputModule(1).applyTemplate("GIF");
+        change(function () { app.run("renderQueue.setOutputModule", { index: idx, loop: o.loop === "forever" }); });
+        change(function () { it.setSettings({ resolution: o.scale / 100, timeSpan: o.workArea ? "workArea" : "comp", frameRate: o.fps > 0 ? o.fps : null }); });
+        it.outputModule(1).file = new File((folder ? folder + "/" : "") + file + ".gif");
+        items.push(it);
+      }
+
+      // Render only ours: switch the other queued items off for the render.
+      var others = [];
+      for (i = 1; i <= rq.numItems; i++) {
+        var q = rq.item(i);
+        if (i <= rq.numItems - items.length && q.render && q.status === RQItemStatus.QUEUED) {
+          q.render = false;
+          others.push(q);
+        }
+      }
+      try {
+        rq.render();
+      } finally {
+        for (i = 0; i < others.length; i++) others[i].render = true;
+      }
+
+      var done = [], failed = [];
+      for (i = 0; i < items.length; i++) {
+        var path = items[i].outputModule(1).file;
+        (items[i].status === RQItemStatus.DONE ? done : failed).push(path ? path.fsName : comps[i].name);
+      }
+      if (!done.length) ctx.fail("the render failed for " + failed.join(", ") + ".");
+      if (failed.length) ctx.warn("The render failed for " + failed.join(", ") + ".");
+      return ctx.done("Rendered " + done.length + (done.length === 1 ? " GIF: " : " GIFs: ") + done.join(", "));
+    }
+  });
+})();
+
+// ---- src/tools/comp/unprecomp.js
+// Unprecomp: brings a precomp layer's layers back into the parent comp, directly above it.
+// A null "<Precomp> Transform" takes the precomp layer's transform (keys and expressions too),
+// parent, timing and 3D switch, and the copied layers without a parent inside are parented to it
+// without compensation: their values are in the precomp's space, which is the null's layer space
+// once the null has the same anchor, position, scale and rotation. Layer times shift by the
+// precomp layer's start time and are trimmed to its in and out points.
+// All the layers are copied with one Copy and Paste (EffectCraft's edit.copy / edit.paste through
+// app.run), which keeps parenting and track mattes between them; Layer.copyToComp copies one
+// layer at a time and drops both.
+
+(function () {
+  var NAME = "Unprecomp", U = MK.util;
+  var SKIP = { "ADBE Opacity": 1 };
+
+  function layerIds(comp) {
+    var out = [];
+    for (var i = 1; i <= comp.numLayers; i++) out.push(comp.layer(i).id);
+    return out;
+  }
+
+  function copyProp(from, to) {
+    if (!to) return;
+    if (from.numKeys) for (var k = 1; k <= from.numKeys; k++) MK.keys.write(to, MK.keys.read(from, k));
+    else to.setValue(from.value);
+    if (from.expression) to.expression = from.expression;
+  }
+
+  // Anchor, position, scale, orientation and rotations of `from` onto `to` (same start time).
+  function copyTransform(from, to) {
+    var a = from.transform, b = to.transform;
+    if (a.position.dimensionsSeparated) b.position.dimensionsSeparated = true;
+    for (var i = 1; i <= a.numProperties; i++) {
+      var p = a.property(i);
+      if (SKIP[p.matchName] || !(p instanceof Property)) continue;
+      if (p.matchName === "ADBE Position" && p.dimensionsSeparated) continue;
+      copyProp(p, b.property(p.matchName));
+    }
+    if (a.position.dimensionsSeparated) {
+      var n = from.threeDLayer ? 3 : 2;
+      for (var d = 0; d < n; d++) copyProp(a.property("ADBE Position_" + d), b.property("ADBE Position_" + d));
+    }
+  }
+
+  // What the copied layers can't show: the precomp layer's own opacity, effects and so on.
+  function lost(pl) {
+    var out = [], op = pl.transform.opacity;
+    if (op.numKeys || op.expression || Math.abs(op.value - 100) > 1e-6) out.push("opacity");
+    if (pl.property("ADBE Effect Parade").numProperties) out.push("effects");
+    if (pl.property("ADBE Mask Parade").numProperties) out.push("masks");
+    if (pl.blendingMode !== BlendingMode.NORMAL) out.push("blending mode");
+    if (pl.hasTrackMatte) out.push("track matte");
+    if (pl.timeRemapEnabled) out.push("time remapping");
+    if (Math.abs(pl.stretch - 100) > 1e-6) out.push("time stretch");
+    return out;
+  }
+
+  function unprecomp(ctx, comp, pl, o) {
+    var src = pl.source, i;
+    var copied = [];
+    if (src.numLayers) {
+      selectOnly(comp, pl);
+      var before = {}, ids = layerIds(comp);
+      for (i = 0; i < ids.length; i++) before[ids[i]] = true;
+      app.run("edit.copy", { comp: src.id, layers: layerIds(src) });
+      comp.openInViewer();
+      app.run("edit.paste", { comp: comp.id });
+      for (i = 1; i <= comp.numLayers; i++) if (!before[comp.layer(i).id]) copied.push(comp.layer(i));
+      if (copied.length !== src.numLayers) MK.fail("pasting " + src.name + "'s layers gave " + copied.length + " of " + src.numLayers + " layers.");
+      // Directly above the precomp layer, in their order.
+      for (i = 0; i < copied.length; i++) copied[i].moveBefore(pl);
+    }
+
+    var nul = comp.layers.addNull();
+    nul.name = U.uniqueName(src.name + " Transform", function (n) { return !!comp.layer(n); });
+    nul.moveBefore(copied.length ? copied[0] : pl);
+    if (pl.threeDLayer) nul.threeDLayer = true;
+    nul.startTime = pl.startTime;
+    nul.inPoint = pl.inPoint;
+    nul.outPoint = pl.outPoint;
+    if (pl.parent) nul.setParentWithJump(pl.parent);
+    copyTransform(pl, nul);
+
+    for (i = 0; i < copied.length; i++) {
+      var L = copied[i];
+      L.startTime = L.startTime + pl.startTime;
+      // The precomp only showed them between its in and out points.
+      var a = Math.max(L.inPoint, pl.inPoint), b = Math.min(L.outPoint, pl.outPoint);
+      if (b - a > 1e-9) {
+        L.inPoint = a;
+        L.outPoint = b;
+      } else L.enabled = false;
+      // Under a 3D null, a 2D layer would ignore the 3D transform: make them all 3D.
+      if (pl.threeDLayer && L instanceof AVLayer && !L.threeDLayer) L.threeDLayer = true;
+      if (!L.parent) L.setParentWithJump(nul);
+    }
+
+    var miss = lost(pl), plName = pl.name;
+    if (o.original === "delete") pl.remove();
+    else pl.enabled = false;
+    ctx.created.push(nul);
+    for (i = 0; i < copied.length; i++) ctx.created.push(copied[i]);
+    if (miss.length) ctx.warn("Not carried over from \"" + plName + "\": " + miss.join(", ") + ".");
+    return copied.length;
+  }
+
+  // Exactly this layer selected, so Paste lands above it.
+  function selectOnly(comp, layer) {
+    var sel = comp.selectedLayers;
+    for (var i = 0; i < sel.length; i++) sel[i].selected = false;
+    layer.selected = true;
+  }
+
+  MK.registerTool({
+    id: "unprecomp",
+    name: NAME,
+    category: "Comp",
+    description: "Brings the layers of the selected precomp layers back into this comp, under a null that carries the precomp layer's transform.",
+    // An open box with layers lifting out (the layers).
+    icon: [
+      "M4 12 V20 H20 V12",
+      { d: "M6.5 9 L12 6.5 L17.5 9 L12 11.5 Z", fill: "accent" },
+      { d: "M6.5 5 L12 2.5 L17.5 5", stroke: "accent", w: 1.6 },
+      { d: "M12 13.5 V18 M10 15.5 L12 13.5 L14 15.5", w: 1.4 }
+    ],
+    options: [
+      { key: "original", label: "Original precomp layer", type: "dropdown", "default": "disable", items: [["disable", "Turn it off"], ["delete", "Delete it"]] }
+    ],
+    run: function (ctx, o) {
+      var pls = U.filter(MK.sel.byIndex(ctx.layers), function (l) { return l instanceof AVLayer && l.source instanceof CompItem; });
+      if (!pls.length) ctx.fail("select one or more precomp layers.");
+      var n = 0, names = [];
+      for (var i = 0; i < pls.length; i++) {
+        names.push("\"" + pls[i].source.name + "\"");
+        n += unprecomp(ctx, ctx.comp, pls[i], o);
+      }
+      return ctx.done("Unprecomposed " + names.join(", ") + ": " + n + (n === 1 ? " layer" : " layers") + " brought into this comp.");
+    }
+  });
+})();
+
+// ---- src/tools/rig/limb.js
+// Limb: a two-segment IK limb. "Limb Root" (hip or shoulder) and "Limb Ctrl" (the end) drive a
+// stroked path root -> joint -> end on the shape layer "Limb", and "Limb Joint", a null for
+// attaching art, follows the joint. All controls sit on "Limb"; Layer Controls on it name the
+// root and the controller, and one on the joint and controller names "Limb", so renaming any of
+// the layers keeps the rig working.
+//
+// Maths, in comp space (mkSolve, shared by the path and the joint):
+// - Segment lengths a = L (1/2 + o), b = L (1/2 - o) from Limb Length L and Mid Point Offset o.
+// - The target is the controller, clamped above the Ground Layer's y + Ground Level: with In < Out
+//   the clamp is soft, y0 + (y1 - y0)(1 - e^(-(y - y0)/(y1 - y0))), which leaves y0 at slope 1
+//   and never passes y1.
+// - d = |target - root| is clamped to |a - b| .. a + b. With Stretch on and d > a + b, both
+//   segments scale so the limb is a + b + (d - a - b) * Stretch Adjust long.
+// - Law of cosines: the joint lies x = (d^2 + a^2 - b^2) / 2d along root -> end and
+//   h = sqrt(a^2 - x^2) to its side. d = 0 picks a straight-down direction, so nothing divides
+//   by zero.
+// - Side: +1, -1 with Bend Direction. With Flip on it is multiplied by a smooth blend of
+//   s = sin(angle - Flip Angle) / sin(Flip Range) (+ 2 Flip Balance - 1), clamped to -1..1 and
+//   smoothstepped, where angle is the target's direction from the root: the knee changes side
+//   when the controller passes Flip Angle (and the opposite direction), over +-Flip Range.
+// - Mid Point Realism r scales h by 1 - r * smoothstep(d / (a + b) from 0.85 to 1), so the joint
+//   eases onto the straight line near full extension instead of snapping.
+// - Path: root + Top Point Offset, joint, end + Bottom Point Offset. Each segment p -> q gets
+//   Bézier handles (q - p) / 3 plus a bulge of (Curvature / 100) * |q - p| / 2 perpendicular to
+//   it, on the outside of the bend for positive values.
+
+(function () {
+  var NAME = "Limb", ID = "limb";
+  var C = MK.controls, S = MK.space, R = MK.rig;
+  var SL = "ADBE Slider Control", CB = "ADBE Checkbox Control", AN = "ADBE Angle Control", PT = "ADBE Point Control", LC = "ADBE Layer Control", CO = "ADBE Color Control";
+
+  function n(param) { return C.name(NAME, param); }
+  // A control on the limb layer mkK, read in an expression.
+  function k(param, type) { return "mkK." + C.ref(n(param), type || SL) + ".value"; }
+
+  var SOLVE = [
+    "function mkF(v, d) { v = Number(v); return isFinite(v) ? v : d; }",
+    "function mkPos(L) { var p = L.toComp(L.anchorPoint.value); return [mkF(p[0], 0), mkF(p[1], 0)]; }",
+    "function mkClamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }",
+    "function mkSolve(mkK) {",
+    "  var mkRootL = " + k("Root", LC) + ", mkCtrlL = " + k("Controller", LC) + ";",
+    "  if (!mkRootL || !mkCtrlL) return null;",
+    "  var mkR = mkPos(mkRootL), mkC = mkPos(mkCtrlL);",
+    "  var mkLen = Math.max(0, mkF(" + k("Limb Length") + ", 300));",
+    "  var mkOff = mkClamp(mkF(" + k("Mid Point Offset") + ", 0), -50, 50) / 100;",
+    "  var mkA = mkLen * (0.5 + mkOff), mkB = mkLen * (0.5 - mkOff);",
+    "  var mkG = " + k("Ground Layer", LC) + ";",
+    "  if (mkG) {",
+    "    var mkGy = mkPos(mkG)[1], mkY0 = mkGy + mkF(" + k("Ground Level In") + ", 0), mkY1 = mkGy + mkF(" + k("Ground Level Out") + ", 0);",
+    "    if (mkY1 < mkY0) { var mkTmp = mkY0; mkY0 = mkY1; mkY1 = mkTmp; }",
+    "    if (mkC[1] > mkY0) mkC = [mkC[0], mkY1 > mkY0 ? mkY0 + (mkY1 - mkY0) * (1 - Math.exp(-(mkC[1] - mkY0) / (mkY1 - mkY0))) : mkY0];",
+    "  }",
+    "  var mkDx = mkC[0] - mkR[0], mkDy = mkC[1] - mkR[1], mkD = Math.sqrt(mkDx * mkDx + mkDy * mkDy);",
+    "  var mkU = mkD > 1e-6 ? [mkDx / mkD, mkDy / mkD] : [0, 1];",
+    "  var mkHi = mkA + mkB, mkLo = Math.abs(mkA - mkB);",
+    "  if (mkD > mkHi) {",
+    "    if (" + k("Stretch", CB) + " && mkHi > 1e-6) {",
+    "      var mkTot = mkHi + (mkD - mkHi) * Math.max(0, mkF(" + k("Stretch Adjust") + ", 100)) / 100;",
+    "      mkA *= mkTot / mkHi;",
+    "      mkB *= mkTot / mkHi;",
+    "      mkHi = mkTot;",
+    "      mkLo = Math.abs(mkA - mkB);",
+    "    }",
+    "    mkD = Math.min(mkD, mkHi);",
+    "  }",
+    "  if (mkD < mkLo) mkD = mkLo;",
+    "  var mkE = [mkR[0] + mkU[0] * mkD, mkR[1] + mkU[1] * mkD];",
+    "  var mkSide = " + k("Bend Direction", CB) + " ? -1 : 1;",
+    "  if (" + k("Flip", CB) + ") {",
+    "    var mkAng = Math.atan2(mkU[1], mkU[0]) - mkF(" + k("Flip Angle", AN) + ", 0) * Math.PI / 180;",
+    "    var mkRange = Math.sin(mkClamp(mkF(" + k("Flip Range", AN) + ", 20), 0, 90) * Math.PI / 180);",
+    "    var mkS = Math.sin(mkAng);",
+    "    mkS = mkRange > 1e-6 ? mkS / mkRange : (mkS >= 0 ? 1 : -1);",
+    "    mkS = mkClamp(mkS + 2 * mkClamp(mkF(" + k("Flip Balance") + ", 0.5), 0, 1) - 1, -1, 1);",
+    "    var mkV = (mkS + 1) / 2;",
+    "    mkSide *= 2 * mkV * mkV * (3 - 2 * mkV) - 1;",
+    "  }",
+    "  var mkX = mkD > 1e-6 ? (mkD * mkD + mkA * mkA - mkB * mkB) / (2 * mkD) : 0;",
+    "  var mkH = Math.sqrt(Math.max(0, mkA * mkA - mkX * mkX));",
+    "  var mkT = mkHi > 1e-6 ? mkClamp((mkD / mkHi - 0.85) / 0.15, 0, 1) : 1;",
+    "  mkH *= 1 - mkClamp(mkF(" + k("Mid Point Realism") + ", 0), 0, 100) / 100 * mkT * mkT * (3 - 2 * mkT);",
+    "  var mkJ = [mkR[0] + mkU[0] * mkX - mkU[1] * mkH * mkSide, mkR[1] + mkU[1] * mkX + mkU[0] * mkH * mkSide];",
+    "  if (!(mkFinite(mkR) && mkFinite(mkJ) && mkFinite(mkE))) return null;",
+    "  return { root: mkR, joint: mkJ, end: mkE, side: mkSide };",
+    "}"
+  ].join("\n");
+
+  // The path on "Limb" (thisLayer is the limb layer).
+  var PATH = [
+    R.LIB,
+    SOLVE,
+    "function mkSeg(p, q, c, side) {",
+    "  var mkDx = q[0] - p[0], mkDy = q[1] - p[1], mkK = mkClamp(mkF(c, 0), -100, 100) / 200 * side;",
+    "  var mkBx = -mkDy * mkK, mkBy = mkDx * mkK;",
+    "  return [fromCompVec([mkDx / 3 + mkBx, mkDy / 3 + mkBy]), fromCompVec([-mkDx / 3 + mkBx, -mkDy / 3 + mkBy])];",
+    "}",
+    "var mkOut = mkPathOf(value);",
+    "try {",
+    "  var mkK = thisLayer, mkS = mkSolve(mkK);",
+    "  if (mkS) {",
+    "    var mkTop = " + k("Top Point Offset", PT) + ", mkBot = " + k("Bottom Point Offset", PT) + ";",
+    "    var mkP0 = [mkS.root[0] + mkF(mkTop[0], 0), mkS.root[1] + mkF(mkTop[1], 0)];",
+    "    var mkP2 = [mkS.end[0] + mkF(mkBot[0], 0), mkS.end[1] + mkF(mkBot[1], 0)];",
+    "    var mkS1 = mkSeg(mkP0, mkS.joint, " + k("Bend Top Curvature") + ", mkS.side);",
+    "    var mkS2 = mkSeg(mkS.joint, mkP2, " + k("Bend Bottom Curvature") + ", mkS.side);",
+    "    var mkPts = [fromComp(mkP0), fromComp(mkS.joint), fromComp(mkP2)];",
+    "    var mkIn = [[0, 0], mkS1[1], mkS2[1]], mkOutT = [mkS1[0], mkS2[0], [0, 0]], mkOk = true;",
+    "    for (var mkI = 0; mkI < 3; mkI++) mkOk = mkOk && mkFinite(mkPts[mkI]) && mkFinite(mkIn[mkI]) && mkFinite(mkOutT[mkI]);",
+    "    if (mkOk) mkOut = createPath([[mkPts[0][0], mkPts[0][1]], [mkPts[1][0], mkPts[1][1]], [mkPts[2][0], mkPts[2][1]]],",
+    "      [[0, 0], [mkIn[1][0], mkIn[1][1]], [mkIn[2][0], mkIn[2][1]]], [[mkOutT[0][0], mkOutT[0][1]], [mkOutT[1][0], mkOutT[1][1]], [0, 0]], false);",
+    "  }",
+    "} catch (mkE) {}",
+    "mkOut"
+  ].join("\n");
+
+  // The joint null's position: the solved joint, in its parent's space.
+  var JOINT = [
+    R.LIB,
+    SOLVE,
+    "var mkOut = value;",
+    "try {",
+    "  var mkL = " + C.ref(n("Limb Layer"), LC) + ".value, mkS = mkL ? mkSolve(mkL) : null;",
+    "  if (mkS) {",
+    "    var mkP = hasParent ? parent.fromComp(mkS.joint) : mkS.joint;",
+    "    if (mkFinite(mkP)) mkOut = [mkP[0], mkP[1]];",
+    "  }",
+    "} catch (mkE) {}",
+    "mkOut"
+  ].join("\n");
+
+  // The controller circle reads Control Size and Control Colour from the limb layer.
+  function fromLimb(param, type, wrap) {
+    return [
+      "var mkOut = value;",
+      "try {",
+      "  var mkK = " + C.ref(n("Limb Layer"), LC) + ".value;",
+      "  if (mkK) { var mkV = " + k(param, type) + "; " + wrap + " }",
+      "} catch (mkE) {}",
+      "mkOut"
+    ].join("\n");
+  }
+  var CTRL_SIZE = fromLimb("Control Size", SL, "if (isFinite(mkV)) mkOut = [Math.max(0, mkV), Math.max(0, mkV)];");
+  var CTRL_COLOR = fromLimb("Control Colour", CO, "if (mkV && isFinite(mkV[0])) mkOut = mkV;");
+
+  function addNull(ctx, name, at) {
+    var l = ctx.comp.layers.addNull();
+    l.name = R.layerName(ctx.comp, name);
+    l.transform.position.setValue([at[0], at[1]]);
+    ctx.created.push(l);
+    return l;
+  }
+
+  // The end controller: a guide shape layer drawn as a stroked circle.
+  function addCtrl(ctx, at, limb) {
+    var l = ctx.comp.layers.addShape();
+    l.name = R.layerName(ctx.comp, "Limb Ctrl");
+    l.transform.position.setValue([at[0], at[1]]);
+    l.guideLayer = true;
+    C.layer(l, n("Limb Layer"), limb);
+    var items = l.property("ADBE Root Vectors Group");
+    var el = items.addProperty("ADBE Vector Shape - Ellipse");
+    MK.expr.set(el.property("ADBE Vector Ellipse Size"), ID, CTRL_SIZE);
+    var st = items.addProperty("ADBE Vector Graphic - Stroke");
+    st.property("ADBE Vector Stroke Width").setValue(3);
+    MK.expr.set(st.property("ADBE Vector Stroke Color"), ID, CTRL_COLOR);
+    ctx.created.push(l);
+    return l;
+  }
+
+  MK.registerTool({
+    id: ID,
+    name: NAME,
+    category: "Rig",
+    description: "Builds a two-segment IK limb (root, joint, end controller) with bend, flip, ground and stretch controls.",
+    // Two bones joined at a knee (the joint dot).
+    icon: [
+      { d: "M5 3.5 L9.5 13 L19.5 19.5", w: 2.2 },
+      { d: "O5 3.5 1.7 O19.5 19.5 1.7", fill: "fg" },
+      { d: "O9.5 13 2.8", fill: "accent" }
+    ],
+    options: [
+      { key: "length", label: "Limb Length", type: "number", "default": 300, min: 1, max: 100000, unit: "px" },
+      { key: "strokeWidth", label: "Stroke Width", type: "number", "default": 20, min: 0, max: 1000, unit: "px" },
+      { key: "strokeColor", label: "Stroke Colour", type: "color", "default": "#E8E8E8" },
+      { key: "controlSize", label: "Control Size", type: "number", "default": 40, min: 1, max: 1000, unit: "px" },
+      { key: "controlColor", label: "Control Colour", type: "color", "default": MK.ACCENTS.Rig }
+    ],
+    run: function (ctx, o) {
+      var given = ctx.layers;
+      if (given.length > 2) ctx.fail("select up to two layers: the root (hip or shoulder) and then the end controller.");
+      var len = o.length, comp = ctx.comp, centre = [comp.width / 2, comp.height / 2];
+      var rootAt = given.length ? S.anchorInComp(given[0]) : [centre[0], centre[1] - 0.4 * len];
+      var ctrlAt = [rootAt[0], rootAt[1] + 0.8 * len];
+      var label = R.freeLabel(comp);
+
+      var root = given[0] || addNull(ctx, "Limb Root", rootAt);
+      var limb = comp.layers.addShape();
+      limb.name = R.layerName(comp, "Limb");
+      ctx.created.push(limb);
+      var ctrl = given[1] || addCtrl(ctx, ctrlAt, limb);
+
+      C.layer(limb, n("Root"), root);
+      C.layer(limb, n("Controller"), ctrl);
+      C.slider(limb, n("Limb Length"), len);
+      C.slider(limb, n("Mid Point Offset"), 0);
+      C.slider(limb, n("Mid Point Realism"), 0);
+      C.checkbox(limb, n("Bend Direction"), false);
+      C.slider(limb, n("Bend Top Curvature"), 0);
+      C.slider(limb, n("Bend Bottom Curvature"), 0);
+      C.checkbox(limb, n("Flip"), false);
+      C.angle(limb, n("Flip Angle"), 0);
+      C.angle(limb, n("Flip Range"), 20);
+      C.slider(limb, n("Flip Balance"), 0.5);
+      C.layer(limb, n("Ground Layer"), null);
+      C.slider(limb, n("Ground Level In"), 0);
+      C.slider(limb, n("Ground Level Out"), 0);
+      C.checkbox(limb, n("Stretch"), false);
+      C.slider(limb, n("Stretch Adjust"), 100);
+      C.point(limb, n("Top Point Offset"), [0, 0]);
+      C.point(limb, n("Bottom Point Offset"), [0, 0]);
+      C.slider(limb, n("Control Size"), o.controlSize);
+      C.color(limb, n("Control Colour"), o.controlColor);
+      C.slider(limb, n("Stroke Width"), o.strokeWidth);
+      C.color(limb, n("Stroke Colour"), o.strokeColor);
+
+      var items = limb.property("ADBE Root Vectors Group");
+      var path = items.addProperty("ADBE Vector Shape - Group").property("ADBE Vector Shape");
+      var start = new Shape();
+      start.vertices = [];
+      start.closed = false;
+      path.setValue(start);
+      MK.expr.set(path, ID, PATH);
+      var st = items.addProperty("ADBE Vector Graphic - Stroke");
+      MK.expr.set(st.property("ADBE Vector Stroke Width"), ID, "var mkW = " + C.ref(n("Stroke Width")) + ".value;\nisFinite(mkW) ? Math.max(0, mkW) : 20");
+      MK.expr.set(st.property("ADBE Vector Stroke Color"), ID, C.ref(n("Stroke Colour"), CO));
+      st.property("ADBE Vector Stroke Line Cap").setValue(2);
+      st.property("ADBE Vector Stroke Line Join").setValue(2);
+
+      var joint = addNull(ctx, "Limb Joint", rootAt);
+      C.layer(joint, n("Limb Layer"), limb);
+      MK.expr.set(joint.transform.position, ID, JOINT);
+
+      var all = [root, limb, joint, ctrl];
+      for (var i = 0; i < all.length; i++) all[i].label = label;
+      return ctx.done("Built \"" + limb.name + "\": root " + root.name + ", controller " + ctrl.name + ", joint " + joint.name + ".");
+    }
+  });
+})();
+
+// ---- src/tools/rig/moveAnchor.js
+// Move Anchor Point: moves each selected layer's anchor point to a corner, edge midpoint or the
+// centre of its sourceRectAtTime(currentTime, false) (or of its masks' bounds), without moving
+// the layer. With shape groups selected, it moves each group's transform anchor within the
+// group's own contents instead.
+//
+// Maths: Position = where the anchor point lands in the parent's space, so a new anchor A' needs
+// Position' = layerToParent(A') under the old transform, at the same time. Every anchor key (or
+// the static anchor) shifts by D = A' - A(now); every position key (or the static position)
+// becomes layerToParent(A(t) + D, t) at its own time t, evaluated before anything is written.
+// layerToParent is toWorld then the parent's fromWorld (EffectCraft's own, so rotation, scale,
+// parenting and 3D count); for groups it is the group matrix (MK.shapes.groupMatrix).
+
+(function () {
+  var NAME = "Move Anchor Point", ID = "moveAnchor";
+  var U = MK.util, S = MK.space, SH = MK.shapes, R = MK.rig;
+  // The 3 x 3 grid: key -> fractions of the bounds' width and height.
+  var KEYS = ["tl", "t", "tr", "l", "c", "r", "bl", "b", "br"];
+  var FRACTION = { tl: [0, 0], t: [0.5, 0], tr: [1, 0], l: [0, 0.5], c: [0.5, 0.5], r: [1, 0.5], bl: [0, 1], b: [0.5, 1], br: [1, 1] };
+  var LABEL = { tl: "top left", t: "top", tr: "top right", l: "left", c: "centre", r: "right", bl: "bottom left", b: "bottom", br: "bottom right" };
+
+  function keyTimes(p) {
+    var out = [];
+    for (var i = 1; i <= p.numKeys; i++) out.push(p.keyTime(i));
+    return out;
+  }
+
+  // Plans the move of anchor property `ap` to `target` (2D, in the anchor's own space) with
+  // position property `pp`; toParent(p, t) maps an anchor-space point to position space at
+  // time t with the current values. Returns a function that writes the result.
+  function plan(ap, pp, target, t, dims, toParent) {
+    var a0 = ap.valueAtTime(t, false);
+    var dx = target[0] - a0[0], dy = target[1] - a0[1];
+    function fit(v) { return dims === 3 ? [v[0], v[1], v[2] || 0] : [v[0], v[1]]; }
+    function shifted(a) { return fit([a[0] + dx, a[1] + dy, a[2] || 0]); }
+    var anchors = ap.numKeys ? U.map(keyTimes(ap), function (tk, i) { return shifted(ap.keyValue(i + 1)); }) : [shifted(a0)];
+    var positions = U.map(pp.numKeys ? keyTimes(pp) : [t], function (tk) { return fit(toParent(shifted(ap.valueAtTime(tk, false)), tk)); });
+    return function () {
+      var i;
+      if (ap.numKeys) for (i = 0; i < anchors.length; i++) ap.setValueAtKey(i + 1, anchors[i]);
+      else ap.setValue(anchors[0]);
+      if (pp.numKeys) for (i = 0; i < positions.length; i++) pp.setValueAtKey(i + 1, positions[i]);
+      else pp.setValue(positions[0]);
+    };
+  }
+
+  // The layer-space bounds to use: the masks' outlines with "Include masks", else the rectangle.
+  function layerBounds(L, t, masks) {
+    var mp = masks ? L.property("ADBE Mask Parade") : null;
+    if (mp && mp.numProperties) {
+      var pts = [];
+      for (var i = 1; i <= mp.numProperties; i++) pts = pts.concat(R.outline(mp.property(i).property("ADBE Mask Shape").valueAtTime(t, false)));
+      if (pts.length) return S.bounds(pts);
+    }
+    return S.bounds(S.rectCorners(L, t, false));
+  }
+
+  // A shape group's contents' bounds in its own space: paths, rectangles, ellipses and stars
+  // (their outer points), through any nested groups.
+  function groupBounds(g, t) {
+    var pts = [];
+    SH.walk(g, function (it, groups) {
+      var m = SH.toLayerMatrix(groups, t), mn = it.matchName, i;
+      var v = function (name) { return it.property(name).valueAtTime(t, false); };
+      if (mn === SH.PATH_ITEM) pts = pts.concat(R.outline(v(R.SHAPE_PATH), m));
+      else if (mn === "ADBE Vector Shape - Rect" || mn === "ADBE Vector Shape - Ellipse") {
+        var rect = mn === "ADBE Vector Shape - Rect";
+        var c = v(rect ? "ADBE Vector Rect Position" : "ADBE Vector Ellipse Position"), s = v(rect ? "ADBE Vector Rect Size" : "ADBE Vector Ellipse Size");
+        var n = rect ? 4 : 64;
+        for (i = 0; i < n; i++) {
+          var u = rect ? [[-1, -1], [1, -1], [1, 1], [-1, 1]][i] : [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)];
+          pts.push(MK.mat.apply(m, [c[0] + u[0] * s[0] / 2, c[1] + u[1] * s[1] / 2]));
+        }
+      } else if (mn === "ADBE Vector Shape - Star") {
+        var sc = v("ADBE Vector Star Position"), k = Math.max(3, Math.round(v("ADBE Vector Star Points"))), rad = v("ADBE Vector Star Outer Radius"), rot = v("ADBE Vector Star Rotation");
+        for (i = 0; i < k; i++) {
+          var ang = (rot + 360 * i / k - 90) * Math.PI / 180;
+          pts.push(MK.mat.apply(m, [sc[0] + rad * Math.cos(ang), sc[1] + rad * Math.sin(ang)]));
+        }
+      }
+    });
+    return S.bounds(pts);
+  }
+
+  function at(b, f) { return [b.left + b.width * f[0], b.top + b.height * f[1]]; }
+
+  function hasExpr(p) { return !!p.expression && p.expressionEnabled !== false; }
+
+  MK.registerTool({
+    id: ID,
+    name: NAME,
+    category: "Rig",
+    description: "Moves the anchor point to a corner, edge or the centre of each layer (or shape group) without moving it.",
+    // A 3 x 3 dot grid with a crosshair (the crosshair).
+    icon: [
+      { d: "O5 5 1.3 O12 5 1.3 O19 5 1.3 O5 12 1.3 O19 12 1.3 O5 19 1.3 O12 19 1.3 O19 19 1.3", fill: "fg" },
+      { d: "O12 12 3.4", stroke: "accent", w: 1.6 },
+      { d: "M12 6.8 L12 17.2 M6.8 12 L17.2 12", stroke: "accent", w: 1.6 }
+    ],
+    options: [
+      {
+        key: "point", label: "Anchor point goes to", type: "custom", "default": "c",
+        validate: function (v) {
+          if (!U.has(FRACTION, v)) throw new Error("the anchor point must be one of " + KEYS.join(", "));
+          return v;
+        },
+        // Nine radio buttons in three rows; they are kept exclusive by hand across the rows.
+        build: function (group, value) {
+          var cur = U.has(FRACTION, value) ? value : "c", buttons = {};
+          function show() { for (var k in buttons) if (U.has(buttons, k)) buttons[k].value = k === cur; }
+          for (var r = 0; r < 3; r++) {
+            var row = group.add("group");
+            row.orientation = "row";
+            for (var c = 0; c < 3; c++) {
+              (function (k) {
+                var rb = row.add("radiobutton", undefined, "");
+                rb.helpTip = LABEL[k];
+                rb.onClick = function () { cur = k; show(); };
+                buttons[k] = rb;
+              })(KEYS[r * 3 + c]);
+            }
+          }
+          show();
+          return { get: function () { return cur; }, set: function (v) { cur = U.has(FRACTION, v) ? v : "c"; show(); }, buttons: buttons };
+        }
+      },
+      { key: "masks", label: "Include masks (use the mask bounds where a layer has masks)", type: "checkbox", "default": false }
+    ],
+    run: function (ctx, o) {
+      var f = FRACTION[o.point], t = ctx.time, skipped = [], todo = [], i;
+      var groups = U.filter(ctx.groups, SH.isGroup);
+      if (!groups.length && !ctx.layers.length) ctx.fail("select one or more layers or shape groups.");
+
+      if (groups.length) {
+        for (i = 0; i < groups.length; i++) {
+          var g = groups[i], tr = SH.groupTransform(g);
+          var gap = tr.property("ADBE Vector Anchor"), gpp = tr.property("ADBE Vector Position");
+          var gb = groupBounds(g, t);
+          if (hasExpr(gap) || hasExpr(gpp)) skipped.push("\"" + g.name + "\" (its anchor or position has an expression)");
+          else if (!gb) skipped.push("\"" + g.name + "\" (it has no shapes)");
+          else todo.push(plan(gap, gpp, at(gb, f), t, 2, (function (grp) {
+            return function (p, tk) { return MK.mat.apply(SH.groupMatrix(grp, tk), p); };
+          })(g)));
+        }
+      } else {
+        for (i = 0; i < ctx.layers.length; i++) {
+          var L = ctx.layers[i], ap = L.transform.anchorPoint, pp = L.transform.position;
+          if (!L.sourceRectAtTime) skipped.push(L.name + " (it has no size)");
+          else if (hasExpr(ap) || hasExpr(pp)) skipped.push(L.name + " (its anchor point or position has an expression)");
+          else if (pp.dimensionsSeparated) skipped.push(L.name + " (its position has separate dimensions)");
+          else todo.push(S.probe(L, function (ev) {
+            return plan(ap, pp, at(layerBounds(L, t, o.masks), f), t, L.threeDLayer ? 3 : 2, function (p, tk) {
+              return ev("var p = L.toWorld([" + p[0] + "," + p[1] + "," + (p[2] || 0) + "]); L.hasParent ? L.parent.fromWorld(p) : p", tk);
+            });
+          }));
+        }
+      }
+      for (i = 0; i < todo.length; i++) todo[i]();
+      var what = groups.length ? (todo.length === 1 ? " group" : " groups") : (todo.length === 1 ? " layer" : " layers");
+      var msg = "Moved the anchor point of " + todo.length + what + " to the " + LABEL[o.point] + ".";
+      if (skipped.length) msg += " Skipped " + skipped.join(", ") + ".";
+      if (!todo.length) ctx.fail("nothing to move. Skipped " + skipped.join(", ") + ".");
+      return ctx.done(msg);
+    }
+  });
+})();
+
+// ---- src/tools/rig/nullsPoints.js
+// Nulls <-> Points: one null per vertex of the selected shape or mask paths, named
+// "<Layer> Point N", at the vertex's comp position.
+//
+// "Points follow nulls" (default) replaces the path with an expression that rebuilds it from the
+// nulls: each null's anchor goes to comp space, back into the path layer (fromComp) and through
+// the inverse of the enclosing shape groups' transforms (mkX) into the path's own space. Tangents
+// and closedness come from the original path. With "Tangents follow too" each tangent is also
+// mapped by its null's own axes (toCompVec, the identity when the null is made), taken through
+// path space -> comp -> null -> back, so rotating or scaling a null turns and scales its handles.
+// "Nulls follow points" goes the other way: each null's position reads its vertex from the
+// (possibly animated) path, through mkX and toComp, into the null's parent space.
+
+(function () {
+  var NAME = "Nulls ↔ Points", ID = "nullsPoints";
+  var U = MK.util, S = MK.space, R = MK.rig;
+
+  function list(a) { return "[" + U.map(a, MK.expr.str).join(", ") + "]"; }
+
+  // The path expression for "Points follow nulls".
+  function pathExpr(pe, names, tangents) {
+    return [
+      R.LIB,
+      "var mkNames = " + list(names) + ";",
+      "var mkTan = " + (tangents ? "true" : "false") + ";",
+      "var mkV = mkPathOf(value), mkP = mkV.points(), mkIn = mkV.inTangents(), mkOutT = mkV.outTangents();",
+      "var mkPts = [], mkI = [], mkO = [], mkToItem = [1, 0, 0, 0, 1, 0], mkIC = [1, 0, 0, 0, 1, 0];",
+      "try {",
+      R.matrixCode(pe.groups, true) + "  mkToItem = mkInv(mkX);",
+      "  var mkLx = toCompVec([1, 0]), mkLy = toCompVec([0, 1]);",
+      "  mkIC = mkMul([mkLx[0], mkLy[0], 0, mkLx[1], mkLy[1], 0], [mkX[0], mkX[1], 0, mkX[3], mkX[4], 0]);",
+      "} catch (mkE0) {}",
+      "var mkCI = mkInv(mkIC);",
+      "for (var mkK = 0; mkK < mkP.length; mkK++) {",
+      "  var mkQ = mkP[mkK], mkA = mkIn[mkK] || [0, 0], mkB = mkOutT[mkK] || [0, 0];",
+      "  if (mkK < mkNames.length) {",
+      "    try {",
+      "      var mkN = thisComp.layer(mkNames[mkK]);",
+      "      var mkC = mkApply(mkToItem, fromComp(mkN.toComp(mkN.anchorPoint.value)));",
+      "      if (mkFinite(mkC)) mkQ = mkC;",
+      "      if (mkTan) {",
+      "        var mkNx = mkN.toCompVec([1, 0]), mkNy = mkN.toCompVec([0, 1]);",
+      "        var mkM = mkMul(mkCI, mkMul([mkNx[0], mkNy[0], 0, mkNx[1], mkNy[1], 0], mkIC));",
+      "        var mkA2 = mkVec(mkM, mkA), mkB2 = mkVec(mkM, mkB);",
+      "        if (mkFinite(mkA2) && mkFinite(mkB2)) { mkA = mkA2; mkB = mkB2; }",
+      "      }",
+      "    } catch (mkE) {}",
+      "  }",
+      "  mkPts.push([mkQ[0], mkQ[1]]);",
+      "  mkI.push([mkA[0], mkA[1]]);",
+      "  mkO.push([mkB[0], mkB[1]]);",
+      "}",
+      "createPath(mkPts, mkI, mkO, mkV.isClosed())"
+    ].join("\n");
+  }
+
+  // The null position expression for "Nulls follow points": vertex k of the path.
+  function nullExpr(pe, k) {
+    return [
+      R.LIB,
+      "var mkOut = value;",
+      "try {",
+      "  var mkL = thisComp.layer(" + MK.expr.str(pe.layer.name) + ");",
+      R.matrixCode(pe.groups, false) + "  var mkP = " + R.ref(pe.prop) + ".points();",
+      "  if (mkP.length > " + k + ") {",
+      "    var mkC = mkL.toComp(mkApply(mkX, mkP[" + k + "]));",
+      "    if (hasParent) mkC = parent.fromComp(mkC);",
+      "    if (mkFinite(mkC)) mkOut = [mkC[0], mkC[1]];",
+      "  }",
+      "} catch (mkE) {}",
+      "mkOut"
+    ].join("\n");
+  }
+
+  MK.registerTool({
+    id: ID,
+    name: NAME,
+    category: "Rig",
+    description: "Makes a null per path vertex: the path follows the nulls, or the nulls follow the path.",
+    // A polyline with small squares on its vertices (the squares).
+    icon: [
+      "M3.5 18 L9 7 L15 15 L20.5 5",
+      { d: "R1.5 16 4 4 R7 5 4 4 R13 13 4 4 R18.5 3 4 4", fill: "accent" }
+    ],
+    options: [
+      { key: "mode", label: "Mode", type: "dropdown", "default": "points", items: [["points", "Points follow nulls"], ["nulls", "Nulls follow points"]] },
+      { key: "tangents", label: "Tangents follow too (rotate and scale with each null)", type: "checkbox", "default": false },
+      { key: "parent", label: "Group nulls under a parent null", type: "checkbox", "default": false }
+    ],
+    run: function (ctx, o) {
+      var paths = R.selectedPaths(ctx);
+      if (!paths.length) ctx.fail("select one or more path properties (a shape path or a mask path).");
+      var follow = o.mode === "points", t = ctx.time, i, k;
+      var empty = U.filter(paths, function (pe) { return !pe.prop.valueAtTime(t, false).vertices.length; });
+      paths = U.filter(paths, function (pe) { return pe.prop.valueAtTime(t, false).vertices.length > 0; });
+      if (!paths.length) ctx.fail("the selected paths have no vertices.");
+      var kept = 0;
+      if (follow) {
+        var d = MK.expr.decide(ctx, U.map(paths, function (pe) { return pe.prop; }));
+        kept = d.skip.length;
+        paths = U.filter(paths, function (pe) { return U.indexOf(d.apply, pe.prop) >= 0; });
+      }
+      var made = 0;
+      for (i = 0; i < paths.length; i++) {
+        var pe = paths[i], shape = pe.prop.valueAtTime(t, false);
+        var m = pathToLayer(pe, t);
+        var at = S.toCompPoints(pe.layer, U.map(shape.vertices, function (v) { return MK.mat.apply(m, v); }), t);
+        var nulls = [], names = [], num = 1;
+        for (k = 0; k < at.length; k++) {
+          while (ctx.comp.layers.byName(pe.layer.name + " Point " + num)) num++;
+          var n = ctx.comp.layers.addNull();
+          n.name = pe.layer.name + " Point " + num;
+          n.moveBefore(pe.layer);
+          n.transform.position.setValue([at[k][0], at[k][1]]);
+          nulls.push(n);
+          names.push(n.name);
+          ctx.created.push(n);
+        }
+        if (o.parent) {
+          var pn = ctx.comp.layers.addNull();
+          pn.name = R.layerName(ctx.comp, pe.layer.name + " Points");
+          pn.moveBefore(nulls[0]);
+          var c = S.bounds(at).center;
+          pn.transform.position.setValue([c[0], c[1]]);
+          for (k = 0; k < nulls.length; k++) nulls[k].parent = pn;
+          ctx.created.push(pn);
+        }
+        if (follow) MK.expr.set(pe.prop, ID, pathExpr(pe, names, o.tangents));
+        else {
+          for (k = 0; k < nulls.length; k++) MK.expr.set(nulls[k].transform.position, ID, nullExpr(pe, k));
+          if (R.nameClash(pe.layer)) ctx.warn("Another layer is also named \"" + pe.layer.name + "\": rename one, or the nulls may follow the wrong path.");
+        }
+        made += nulls.length;
+      }
+      var msg = "Added " + made + (made === 1 ? " null" : " nulls") + " for " + paths.length + (paths.length === 1 ? " path" : " paths") +
+        (follow ? "; the path follows them." : "; they follow the path.");
+      if (empty.length) msg += " Skipped " + empty.length + " empty " + (empty.length === 1 ? "path." : "paths.");
+      if (kept) msg += " Kept " + kept + " path" + (kept === 1 ? "" : "s") + " with an existing expression.";
+      return ctx.done(msg);
+    }
+  });
+
+  // Path space -> layer space: the enclosing shape groups at time t (identity for masks).
+  function pathToLayer(pe, t) { return pe.mask ? MK.mat.identity() : MK.shapes.toLayerMatrix(pe.groups, t); }
 })();
 
 // ---- src/tools/rig/parentNull.js
@@ -3097,6 +5058,834 @@ MK.layoutDialog = (function () {
       var nul = makeNull(ctx, "Parent Null", at, layers[0], all3D);
       for (i = 0; i < targets.length; i++) targets[i].parent = nul;
       return ctx.done("Parented " + targets.length + (targets.length === 1 ? " layer" : " layers") + " to \"Parent Null\"." + (kept ? " " + kept + " kept their parent." : ""));
+    }
+  });
+})();
+
+// ---- src/tools/rig/positionTrace.js
+// Position Trace: for each selected layer a shape layer "<Layer> Trace" whose stroked path
+// shows where the layer's anchor point has been (and, with Frames Offset, will be).
+//
+// The path starts at the target's comp position at time + Frames Offset frames and steps back
+// every Trace Detail frames to time - Frames Trace, so it has floor((Trace + Offset) / Detail) + 1
+// vertices, the newest first. Each sample is the target's anchor point taken to comp space at
+// its own time (toComp(p, t)), then into the trace layer (fromComp). Trace Smooth r replaces
+// each vertex with the mean of its r neighbours on either side (fewer near the two ends, so the
+// ends stay put). Taper Out thins the stroke towards the oldest end.
+
+(function () {
+  var NAME = "Position Trace", ID = "positionTrace";
+  var U = MK.util, C = MK.controls, R = MK.rig;
+  var CTRL = {
+    target: C.name(NAME, "Target"), frames: C.name(NAME, "Frames Trace"), offset: C.name(NAME, "Frames Offset"),
+    smooth: C.name(NAME, "Trace Smooth"), detail: C.name(NAME, "Trace Detail"),
+    width: C.name(NAME, "Stroke Width"), color: C.name(NAME, "Stroke Colour")
+  };
+  // The label colour of trace layers ("Aqua", the closest to the Rig accent), so they read as guides.
+  var GUIDE_LABEL = 3;
+
+  // A slider's value in the expression, or `fallback` when it isn't a finite number.
+  function num(name, fallback) { return "mkNum(" + C.ref(name) + ".value, " + fallback + ")"; }
+
+  var PATH = [
+    R.LIB,
+    "function mkNum(v, d) { return isFinite(v) ? v : d; }",
+    "var mkOut = mkPathOf(value);",
+    "try {",
+    "  var mkT = " + C.ref(CTRL.target, "ADBE Layer Control") + ".value;",
+    "  if (mkT) {",
+    "    var mkFd = thisComp.frameDuration;",
+    "    var mkBack = " + num(CTRL.frames, 30) + ", mkFwd = " + num(CTRL.offset, 0) + ";",
+    "    var mkDet = Math.max(1, Math.min(10, Math.round(" + num(CTRL.detail, 1) + ")));",
+    "    var mkN = Math.max(0, Math.min(2000, Math.floor((mkBack + mkFwd) / mkDet + 1e-9)));",
+    "    var mkT0 = time + mkFwd * mkFd, mkRaw = [];",
+    "    for (var mkK = 0; mkK <= mkN; mkK++) {",
+    "      var mkTi = mkT0 - mkK * mkDet * mkFd;",
+    "      var mkP = fromComp(mkT.toComp(mkT.anchorPoint.valueAtTime(mkTi), mkTi));",
+    "      mkRaw.push(mkFinite(mkP) ? [mkP[0], mkP[1]] : mkRaw.length ? mkRaw[mkRaw.length - 1] : [0, 0]);",
+    "    }",
+    "    var mkR = Math.max(0, Math.min(10, Math.round(" + num(CTRL.smooth, 0) + "))), mkPts = [];",
+    "    for (mkK = 0; mkK < mkRaw.length; mkK++) {",
+    "      var mkW = Math.min(mkR, mkK, mkRaw.length - 1 - mkK), mkSx = 0, mkSy = 0;",
+    "      for (var mkJ = mkK - mkW; mkJ <= mkK + mkW; mkJ++) { mkSx += mkRaw[mkJ][0]; mkSy += mkRaw[mkJ][1]; }",
+    "      mkPts.push([mkSx / (2 * mkW + 1), mkSy / (2 * mkW + 1)]);",
+    "    }",
+    "    mkOut = createPath(mkPts, null, null, false);",
+    "  }",
+    "} catch (mkE) {}",
+    "mkOut"
+  ].join("\n");
+
+  MK.registerTool({
+    id: ID,
+    name: NAME,
+    category: "Rig",
+    description: "Draws the path each selected layer travels as a stroked trail on a new shape layer.",
+    // A dotted fading trail behind a dot (the dot).
+    icon: [
+      { d: "O3.8 17.6 1", fill: "fg", alpha: 0.3 },
+      { d: "O7.2 15.2 1.2", fill: "fg", alpha: 0.45 },
+      { d: "O10.8 13.1 1.4", fill: "fg", alpha: 0.6 },
+      { d: "O14.6 11.4 1.6", fill: "fg", alpha: 0.8 },
+      { d: "O19.2 9.6 3", fill: "accent" }
+    ],
+    options: [
+      { key: "frames", label: "Frames Trace", type: "number", "default": 30, min: 0, max: 1000, help: "Frames of history behind the layer" },
+      { key: "offset", label: "Frames Offset", type: "number", "default": 0, min: -1000, max: 1000, help: "Frames ahead of the current time" },
+      { key: "smooth", label: "Trace Smooth", type: "number", "default": 0, min: 0, max: 10, integer: true },
+      { key: "detail", label: "Trace Detail", type: "number", "default": 1, min: 1, max: 10, integer: true, unit: "frames per sample" },
+      { key: "width", label: "Stroke Width", type: "number", "default": 4, min: 0, max: 1000, unit: "px" },
+      { key: "color", label: "Stroke Colour", type: "color", "default": MK.ACCENTS.Rig },
+      { key: "taper", label: "Taper Out (the trail thins towards its oldest end)", type: "checkbox", "default": true }
+    ],
+    run: function (ctx, o) {
+      var layers = MK.sel.byIndex(ctx.layers);
+      if (!layers.length) ctx.fail("select one or more layers to trace.");
+      for (var i = 0; i < layers.length; i++) {
+        var L = layers[i];
+        var sh = ctx.comp.layers.addShape();
+        sh.name = R.layerName(ctx.comp, L.name + " Trace");
+        sh.moveBefore(L);
+        sh.label = GUIDE_LABEL;
+        C.layer(sh, CTRL.target, L);
+        C.slider(sh, CTRL.frames, o.frames);
+        C.slider(sh, CTRL.offset, o.offset);
+        C.slider(sh, CTRL.smooth, o.smooth);
+        C.slider(sh, CTRL.detail, o.detail);
+        C.slider(sh, CTRL.width, o.width);
+        C.color(sh, CTRL.color, o.color);
+        var items = sh.property("ADBE Root Vectors Group");
+        var path = items.addProperty("ADBE Vector Shape - Group").property("ADBE Vector Shape");
+        var empty = new Shape();
+        empty.closed = false;
+        path.setValue(empty);
+        MK.expr.set(path, ID, PATH);
+        var st = items.addProperty("ADBE Vector Graphic - Stroke");
+        MK.expr.set(st.property("ADBE Vector Stroke Width"), ID, "var mkW = " + C.ref(CTRL.width) + ".value;\nisFinite(mkW) ? Math.max(0, mkW) : 4");
+        MK.expr.set(st.property("ADBE Vector Stroke Color"), ID, C.ref(CTRL.color, "ADBE Color Control"));
+        st.property("ADBE Vector Stroke Line Cap").setValue(2);
+        st.property("ADBE Vector Stroke Line Join").setValue(2);
+        if (o.taper) {
+          var tp = st.property("ADBE Vector Stroke Taper");
+          tp.property("Length Units").setValue(2);
+          tp.property("End Length").setValue(100);
+          tp.property("End Width").setValue(0);
+        }
+        ctx.created.push(sh);
+      }
+      return ctx.done("Added " + layers.length + (layers.length === 1 ? " trace." : " traces."));
+    }
+  });
+})();
+
+// ---- src/tools/rig/sliderToPath.js
+// Slider to Path: the selected layers ride a selected shape or mask path, each at its own
+// "Path Progress" slider (0-100 % of the path's arc length).
+//
+// Uses EffectCraft's own pointOnPath / tangentOnPath (crates/expr/src/prelude.js: arc-length
+// lookup over 32 samples per Bézier segment). The point is in the path's own space; the
+// enclosing shape groups' matrix (mkX) takes it to the path layer, toComp to comp space and the
+// attached layer's parent fromComp to the space its Position is in. Closed paths wrap (110 % is
+// 10 %), open paths clamp. "Orient along path" turns Rotation to the tangent's angle (through the
+// same spaces as a vector) plus Orient Offset.
+
+(function () {
+  var NAME = "Slider to Path", ID = "sliderToPath";
+  var U = MK.util, C = MK.controls, R = MK.rig;
+  var CTRL = { progress: C.name(NAME, "Path Progress"), orient: C.name(NAME, "Orient along path"), offset: C.name(NAME, "Orient Offset") };
+
+  // The path, its layer (mkL), mkX and mkU, the progress as a fraction.
+  function head(pe) {
+    return [
+      "  var mkL = thisComp.layer(" + MK.expr.str(pe.layer.name) + ");",
+      R.matrixCode(pe.groups, false) + "  var mkPath = " + R.ref(pe.prop) + ";",
+      "  var mkU = " + C.ref(CTRL.progress) + ".value / 100;",
+      "  if (!isFinite(mkU)) mkU = 0;",
+      "  mkU = mkPath.isClosed() ? mkU - Math.floor(mkU) : Math.max(0, Math.min(1, mkU));"
+    ].join("\n");
+  }
+
+  function positionExpr(pe) {
+    return [
+      R.LIB,
+      "var mkOut = value;",
+      "try {",
+      head(pe),
+      "  var mkC = mkL.toComp(mkApply(mkX, mkPath.pointOnPath(mkU)));",
+      "  if (hasParent) mkC = parent.fromComp(mkC);",
+      "  if (mkFinite(mkC)) mkOut = value.length > 2 ? [mkC[0], mkC[1], value[2]] : [mkC[0], mkC[1]];",
+      "} catch (mkE) {}",
+      "mkOut"
+    ].join("\n");
+  }
+
+  function rotationExpr(pe) {
+    return [
+      R.LIB,
+      "var mkOut = value;",
+      "try {",
+      "if (" + C.ref(CTRL.orient, "ADBE Checkbox Control") + ".value) {",
+      head(pe),
+      "  var mkT = mkL.toCompVec(mkVec(mkX, mkPath.tangentOnPath(mkU)));",
+      "  if (hasParent) mkT = parent.fromCompVec(mkT);",
+      "  var mkA = Math.atan2(mkT[1], mkT[0]) * 180 / Math.PI + " + C.ref(CTRL.offset, "ADBE Angle Control") + ".value;",
+      "  if (mkFinite(mkT) && (mkT[0] || mkT[1]) && isFinite(mkA)) mkOut = mkA;",
+      "}",
+      "} catch (mkE) {}",
+      "mkOut"
+    ].join("\n");
+  }
+
+  MK.registerTool({
+    id: ID,
+    name: NAME,
+    category: "Rig",
+    description: "Puts the selected layers on the selected path, each moved along it by a Path Progress slider.",
+    // A curved path with a dot and a slider track below (the dot).
+    icon: [
+      "M3 13 C7 3 13 15 21 6",
+      { d: "M4 20 L20 20", w: 1.4 },
+      { d: "M10.5 17.6 L10.5 22.4", w: 2.2 },
+      { d: "O10.5 9.1 2.7", fill: "accent" }
+    ],
+    options: [
+      { key: "spread", label: "Spread several layers evenly along the path", type: "checkbox", "default": true },
+      { key: "orient", label: "Orient along path (rotation follows the tangent)", type: "checkbox", "default": false },
+      { key: "orientOffset", label: "Orient Offset", type: "number", "default": 0, min: -3600, max: 3600, unit: "°" }
+    ],
+    run: function (ctx, o) {
+      var paths = R.selectedPaths(ctx);
+      if (!paths.length) ctx.fail("select a path property (a shape path or a mask path) and the layers to put on it.");
+      if (paths.length > 1) ctx.fail("select only one path property.");
+      var pe = paths[0];
+      var layers = U.filter(MK.sel.byIndex(ctx.layers), function (l) { return l.index !== pe.layer.index; });
+      if (!layers.length) ctx.fail("also select one or more layers (other than the path's layer) to put on the path.");
+      var noFx = U.filter(layers, function (l) { return !l.property("ADBE Effect Parade"); });
+      if (noFx.length) ctx.fail(noFx[0].name + " can't take effects, so it can't hold the Path Progress slider.");
+
+      var props = U.map(layers, function (l) { return l.transform.position; });
+      if (o.orient) props = props.concat(U.map(layers, function (l) { return l.transform.rotation; }));
+      var d = MK.expr.decide(ctx, props);
+      var want = function (p) { return U.indexOf(d.apply, p) >= 0; };
+      var n = layers.length, closed = pe.prop.valueAtTime(ctx.time, false).closed, done = 0;
+      for (var i = 0; i < n; i++) {
+        var L = layers[i], pos = props[i];
+        if (!want(pos)) continue;
+        var at = !o.spread || n === 1 ? 0 : closed ? 100 * i / n : 100 * i / (n - 1);
+        C.slider(L, CTRL.progress, at);
+        MK.expr.set(pos, ID, positionExpr(pe));
+        if (o.orient && want(props[n + i])) {
+          C.checkbox(L, CTRL.orient, true);
+          C.angle(L, CTRL.offset, o.orientOffset);
+          MK.expr.set(props[n + i], ID, rotationExpr(pe));
+        }
+        done++;
+      }
+      if (R.nameClash(pe.layer)) ctx.warn("Another layer is also named \"" + pe.layer.name + "\": rename one, or the expressions may read the wrong path.");
+      var msg = "Put " + done + (done === 1 ? " layer" : " layers") + " on the path of " + pe.layer.name + ".";
+      if (d.skip.length) msg += " Kept " + d.skip.length + " existing expression" + (d.skip.length === 1 ? "." : "s.");
+      return ctx.done(msg);
+    }
+  });
+})();
+
+// ---- src/tools/shapes/collectColors.js
+// Collect Colors: the colours of the selected layers (all layers when none are selected) at the
+// current time: shape fills and strokes at any group depth, text fill and stroke, solid
+// sources and Color Control values. Gradients are skipped (their stops aren't read).
+// Merging: each channel is first quantised to a grid of 2^Step (0-255 scale, Step 0 = off);
+// then a colour joins the first kept colour within Tolerance, the RGB distance in 0-255 units
+// scaled so that black to white is 100. The result, sorted by hue (greys last, light to dark),
+// becomes a "Palette" shape layer of 40 px squares (8 px apart, 8 to a row, from the comp's
+// top-left corner) and a "Palette" null with Color Controls "Color 1"...
+// Colours are the plain 0-1 values the properties hold (never through U.rgba, which is for
+// drawing the UI).
+
+(function () {
+  var NAME = "Collect Colors", SH = MK.shapes, U = MK.util;
+  var SIZE = 40, GAP = 8, PER_ROW = 8, FULL = 255 * Math.sqrt(3);
+  var PAINT = { "ADBE Vector Graphic - Fill": "ADBE Vector Fill Color", "ADBE Vector Graphic - Stroke": "ADBE Vector Stroke Color" };
+  var GRADIENT = { "ADBE Vector Graphic - G-Fill": 1, "ADBE Vector Graphic - G-Stroke": 1 };
+
+  // {colors: [[r, g, b] 0-1], gradients: n} from the layers at time t.
+  function gather(layers, t) {
+    var out = { colors: [], gradients: 0 };
+    function add(c) { out.colors.push([c[0], c[1], c[2]]); }
+    for (var i = 0; i < layers.length; i++) {
+      var L = layers[i];
+      SH.walk(SH.contents(L), function (it) {
+        if (U.has(PAINT, it.matchName)) add(it.property(PAINT[it.matchName]).valueAtTime(t, false));
+        else if (U.has(GRADIENT, it.matchName)) out.gradients++;
+      });
+      var text = L.property("ADBE Text Properties");
+      if (text) {
+        var d = text.property("ADBE Text Document").valueAtTime(t, false);
+        if (d.applyFill) add(d.fillColor);
+        if (d.applyStroke && d.strokeWidth > 0) add(d.strokeColor);
+      }
+      if (L.matchName === "ADBE AV Layer" && !L.nullLayer && !L.adjustmentLayer && L.source instanceof FootageItem && String(L.source.mainSource) === "[object SolidSource]") add(L.source.mainSource.color);
+      var fx = L.property("ADBE Effect Parade");
+      for (var k = 1; fx && k <= fx.numProperties; k++) if (fx.property(k).matchName === "ADBE Color Control") add(fx.property(k).property(1).valueAtTime(t, false));
+    }
+    return out;
+  }
+
+  // Quantise, then merge within tolerance. Returns [r, g, b] 0-1 colours.
+  function merge(colors, tolerance, step) {
+    var q = Math.pow(2, step), kept = [];
+    for (var i = 0; i < colors.length; i++) {
+      var c = U.map(colors[i], function (v) {
+        var x = U.clamp(v, 0, 1) * 255;
+        return step ? Math.min(255, Math.round(x / q) * q) : x;
+      });
+      var near = false;
+      for (var k = 0; k < kept.length && !near; k++) {
+        var dr = c[0] - kept[k][0], dg = c[1] - kept[k][1], db = c[2] - kept[k][2];
+        near = Math.sqrt(dr * dr + dg * dg + db * db) * 100 / FULL <= tolerance;
+      }
+      if (!near) kept.push(c);
+    }
+    return U.map(kept, function (c) { return [c[0] / 255, c[1] / 255, c[2] / 255]; });
+  }
+
+  // Sort key: hue in degrees, greys (saturation under 5 %) after every hue, light to dark.
+  function hueKey(c) {
+    var mx = Math.max(c[0], c[1], c[2]), mn = Math.min(c[0], c[1], c[2]), d = mx - mn;
+    if (!mx || d / mx < 0.05) return 1000 + (1 - mx);
+    var h = mx === c[0] ? (c[1] - c[2]) / d : mx === c[1] ? 2 + (c[2] - c[0]) / d : 4 + (c[0] - c[1]) / d;
+    return (h * 60 + 360) % 360 + (1 - mx) / 1000;
+  }
+
+  function paletteShapes(ctx, colors) {
+    var L = ctx.comp.layers.addShape();
+    L.name = "Palette";
+    L.transform.anchorPoint.setValue([0, 0]);
+    L.transform.position.setValue([0, 0]);
+    var root = SH.contents(L);
+    for (var i = 0; i < colors.length; i++) {
+      var g = root.addProperty(SH.GROUP);
+      g.name = "Color " + (i + 1);
+      var rect = SH.inner(g).addProperty("ADBE Vector Shape - Rect");
+      rect.property("ADBE Vector Rect Size").setValue([SIZE, SIZE]);
+      rect.property("ADBE Vector Rect Position").setValue([GAP + SIZE / 2 + (i % PER_ROW) * (SIZE + GAP), GAP + SIZE / 2 + Math.floor(i / PER_ROW) * (SIZE + GAP)]);
+      SH.inner(g).addProperty("ADBE Vector Graphic - Fill").property("ADBE Vector Fill Color").setValue(colors[i]);
+    }
+    ctx.created.push(L);
+  }
+
+  function paletteNull(ctx, colors) {
+    var n = ctx.comp.layers.addNull();
+    n.name = "Palette";
+    for (var i = 0; i < colors.length; i++) MK.controls.color(n, "Color " + (i + 1), colors[i]);
+    ctx.created.push(n);
+  }
+
+  MK.registerTool({
+    id: "collectColors",
+    name: NAME,
+    category: "Shapes",
+    description: "Collects the colours of the selected layers (or the whole comp) into a palette layer and a null with Color Controls.",
+    // A painter's palette (three swatch dots).
+    icon: [
+      "M12 3 C6.5 3 2.5 7 2.5 12 C2.5 17 6.5 21 11 21 C13 21 13.6 19.6 13 18.2 C12.4 16.8 13.4 15.2 15.4 15.2 L17.6 15.2 C19.8 15.2 21.5 13.6 21.5 11.4 C21.5 6.6 17.4 3 12 3 Z",
+      { d: "O7.6 9.6 1.8", fill: "accent" },
+      { d: "O12.4 7 1.8", fill: "accent" },
+      { d: "O17 9.8 1.8", fill: "accent" }
+    ],
+    options: [
+      { key: "tolerance", label: "Merge tolerance", type: "number", "default": 6, min: 0, max: 100, help: "Colours closer than this merge (RGB distance, black to white = 100)." },
+      { key: "step", label: "Quantise step", type: "number", "default": 0, min: 0, max: 10, integer: true, help: "Rounds each channel to a multiple of 2^Step (0-255 scale) before merging; 0 is off." },
+      { key: "shapes", label: "Make a \"Palette\" shape layer", type: "checkbox", "default": true },
+      { key: "controls", label: "Make a \"Palette\" null with Color Controls", type: "checkbox", "default": true }
+    ],
+    run: function (ctx, o) {
+      if (!o.shapes && !o.controls) ctx.fail("turn on at least one output in the options (Shift-click).");
+      var layers = ctx.layers;
+      if (!layers.length) for (var i = 1; i <= ctx.comp.numLayers; i++) layers.push(ctx.comp.layer(i));
+      var got = gather(layers, ctx.time);
+      if (!got.colors.length) ctx.fail("found no colours in " + (ctx.layers.length ? "the selected layers." : "the comp."));
+      var colors = merge(got.colors, o.tolerance, o.step);
+      colors.sort(function (a, b) { return hueKey(a) - hueKey(b); });
+      if (o.shapes) paletteShapes(ctx, colors);
+      if (o.controls) paletteNull(ctx, colors);
+      if (got.gradients) ctx.warn("Skipped " + got.gradients + (got.gradients === 1 ? " gradient" : " gradients") + ": gradient stops aren't collected.");
+      return ctx.done("Collected " + colors.length + (colors.length === 1 ? " colour" : " colours") + " (from " + got.colors.length + " found).");
+    }
+  });
+})();
+
+// ---- src/tools/shapes/extractShapes.js
+// Extract Shapes: each top-level group of a shape layer goes to its own shape layer, named after
+// the group, directly above the original and in the group order (the first group on top, as it
+// draws). With groups selected only those are extracted (a nested group counts as its top-level
+// group); a selected shape layer with none of its groups selected gives all of them.
+// When every group of a layer is extracted, the original is hidden (or deleted). When only some
+// are, the original stays visible and the extracted groups are switched off in it (or deleted
+// from it); the new layers sit above it, so a group that drew above an extracted one now draws
+// below it, and the result says so.
+//
+// How the contents move: EffectCraft's PropertyGroup.duplicate() and moveTo() work only inside
+// one layer, and shape items reach another layer only through the clipboard (Edit ▸ Copy /
+// Paste), which doesn't bring the layer's transform, parent, timing, blending mode, 3D, masks
+// and effects with their keyframes and expressions. Layer.duplicate() copies all of that
+// exactly, so each new layer is a duplicate of the original with the other top-level groups
+// deleted. Top-level items that aren't groups (a fill, stroke or modifier for every group) stay
+// in each copy.
+
+(function () {
+  var NAME = "Extract Shapes", SH = MK.shapes, U = MK.util;
+
+  // Indices of the top-level groups in a shape layer's contents.
+  function topGroups(layer) {
+    var root = SH.contents(layer), out = [];
+    for (var i = 1; i <= root.numProperties; i++) if (SH.isGroup(root.property(i))) out.push(i);
+    return out;
+  }
+
+  // [{layer, indices, all}]: what to extract, layers in selection order.
+  function plan(ctx) {
+    var byId = {}, list = [], i;
+    function entry(layer) {
+      if (!U.has(byId, layer.id)) list.push(byId[layer.id] = { layer: layer, picked: [] });
+      return byId[layer.id];
+    }
+    for (i = 0; i < ctx.groups.length; i++) {
+      var g = ctx.groups[i];
+      if (!SH.isGroup(g)) continue;
+      var top = SH.groupsOf(g)[0] || g, e = entry(MK.sel.layerOf(top));
+      if (U.indexOf(e.picked, top.propertyIndex) < 0) e.picked.push(top.propertyIndex);
+    }
+    for (i = 0; i < ctx.layers.length; i++) if (SH.contents(ctx.layers[i])) entry(ctx.layers[i]);
+    var out = [];
+    for (i = 0; i < list.length; i++) {
+      var tops = topGroups(list[i].layer), idx = list[i].picked.length ? list[i].picked : tops;
+      if (!idx.length) continue;
+      idx = idx.slice();
+      idx.sort(function (a, b) { return a - b; });
+      out.push({ layer: list[i].layer, indices: idx, all: idx.length === tops.length });
+    }
+    return out;
+  }
+
+  MK.registerTool({
+    id: "extractShapes",
+    name: NAME,
+    category: "Shapes",
+    description: "Moves each top-level shape group to its own shape layer, keeping the layer's transform, parent and timing.",
+    // A layer box with a shape popping out of it along an arrow (the shape).
+    icon: [
+      "R2.5 11.5 10 10",
+      "M7.5 16.5 L13.8 10.2",
+      "M10.4 10.2 L13.8 10.2 L13.8 13.6",
+      { d: "O18 6 4", fill: "accent" }
+    ],
+    options: [
+      { key: "original", label: "Original layer", type: "dropdown", "default": "hide", items: [["hide", "Keep it, hidden"], ["delete", "Delete it"]], help: "When only some groups are extracted, the original stays and those groups are switched off in it (or deleted from it)." }
+    ],
+    run: function (ctx, o) {
+      var jobs = plan(ctx);
+      if (!jobs.length) ctx.fail("select shape layers with groups, or top-level groups in a shape layer.");
+      var made = 0, order = false, i, k;
+      for (i = 0; i < jobs.length; i++) {
+        var L = jobs[i].layer, root = SH.contents(L), idx = jobs[i].indices;
+        var names = U.map(idx, function (n) { return root.property(n).name; });
+        for (k = 0; k < idx.length; k++) {
+          var dup = L.duplicate();
+          dup.moveBefore(L);
+          var droot = SH.contents(dup);
+          for (var n = droot.numProperties; n >= 1; n--) if (n !== idx[k] && SH.isGroup(droot.property(n))) droot.property(n).remove();
+          dup.name = names[k];
+          ctx.created.push(dup);
+          made++;
+        }
+        if (jobs[i].all) {
+          if (o.original === "delete") L.remove();
+          else L.enabled = false;
+          continue;
+        }
+        // A group left in the original above an extracted one now draws below it.
+        var tops = topGroups(L);
+        for (k = 0; k < tops.length; k++) if (tops[k] < idx[idx.length - 1] && U.indexOf(idx, tops[k]) < 0) order = true;
+        for (k = idx.length - 1; k >= 0; k--) {
+          if (o.original === "delete") root.property(idx[k]).remove();
+          else root.property(idx[k]).enabled = false;
+        }
+      }
+      if (order) ctx.warn("Groups left in the original layer that were above an extracted group now draw below it.");
+      return ctx.done("Extracted " + made + (made === 1 ? " group" : " groups") + " to new layers.");
+    }
+  });
+})();
+
+// ---- src/tools/shapes/mergeShapes.js
+// Merge Shapes: two or more shape layers into one new shape layer, "Merged Shapes", at the comp
+// origin with an identity transform, above the top-most source. Each source becomes a group
+// named after it (top-most first, so the stacking is kept), holding its contents. The group's
+// transform is the source's layer-to-comp matrix at the current time (parents included), split
+// into rotation, skew and scale: a 2 x 2 matrix A is R(rotation) * U with U upper triangular
+// (QR), and U = Skew * Scale, which is what a shape group applies. Layer opacity becomes group
+// opacity. Animated transforms, parents and 3D are flattened to the current time, with a warning.
+// EffectCraft draws a stroke inside a group with one width (scaled by the group's mean scale),
+// while a layer's non-uniform scale or skew stretches its strokes, so such layers are warned
+// about.
+//
+// The contents are copied with EffectCraft's Edit ▸ Copy / Paste of shape items (the only way
+// shape items reach another layer; PropertyGroup.duplicate() stays in its layer): the source's
+// top-level items are selected and copied, then pasted above a placeholder selected inside the
+// new group. This replaces the clipboard and leaves the merged layer selected.
+
+(function () {
+  var NAME = "Merge Shapes", SH = MK.shapes, U = MK.util;
+
+  // The 2D affine layer -> comp matrix at t, fitted through three points (3D layers too).
+  function compMatrix(layer, t) {
+    var p = MK.space.toCompPoints(layer, [[0, 0, 0], [100, 0, 0], [0, 100, 0]], t);
+    return [(p[1][0] - p[0][0]) / 100, (p[2][0] - p[0][0]) / 100, p[0][0], (p[1][1] - p[0][1]) / 100, (p[2][1] - p[0][1]) / 100, p[0][1]];
+  }
+
+  // Group transform values that make MK.mat.transform([0, 0], position, scale, rotation, skew, 0)
+  // equal the matrix m.
+  function decompose(m) {
+    var rot = Math.atan2(m[3], m[0]), c = Math.cos(rot), s = Math.sin(rot);
+    var sx = Math.sqrt(m[0] * m[0] + m[3] * m[3]), u01 = c * m[1] + s * m[4], sy = c * m[4] - s * m[1];
+    return { position: [m[2], m[5]], scale: [sx * 100, sy * 100], rotation: rot * 180 / Math.PI, skew: sy ? -Math.atan(u01 / sy) * 180 / Math.PI : 0 };
+  }
+
+  function hasStroke(layer) {
+    var found = false;
+    SH.walk(SH.contents(layer), function (it) { if (/^ADBE Vector Graphic - G?-?Stroke$/.test(it.matchName)) found = true; });
+    return found;
+  }
+
+  function animated(layer) {
+    var tr = layer.property("ADBE Transform Group");
+    for (var i = 1; i <= tr.numProperties; i++) if (tr.property(i).isTimeVarying) return true;
+    return false;
+  }
+
+  // Pastes copies of src's top-level contents into `group` (on the layer `dest`).
+  function copyContents(src, dest, group) {
+    var from = SH.contents(src);
+    if (!from.numProperties) return;
+    var spot = SH.inner(group).addProperty("ADBE Vector Shape - Rect");
+    spot.name = "Motion Kit placeholder";
+    // Selecting a layer with layer.select clears the property and keyframe selection, so Copy
+    // takes exactly these shape items.
+    app.run("layer.select", { layers: [src.id] });
+    for (var i = 1; i <= from.numProperties; i++) from.property(i).selected = true;
+    app.run("edit.copy", {});
+    app.run("layer.select", { layers: [dest.id] });
+    spot.selected = true;
+    app.run("edit.paste", {});
+    spot.remove();
+  }
+
+  MK.registerTool({
+    id: "mergeShapes",
+    name: NAME,
+    category: "Shapes",
+    description: "Merges the selected shape layers into one shape layer, one group per layer, without moving anything.",
+    // Two shapes with arrows into one box (the box).
+    icon: [
+      "O6 5 3",
+      "R15 2 6 6",
+      "M6.5 9.5 L9.8 13.6",
+      "M17.5 9.5 L14.2 13.6",
+      { d: "U5 14.5 14 7.5 1.5", fill: "accent" }
+    ],
+    options: [
+      { key: "sources", label: "Source layers", type: "dropdown", "default": "hide", items: [["hide", "Hide them"], ["delete", "Delete them"]] }
+    ],
+    run: function (ctx, o) {
+      var src = MK.sel.byIndex(U.filter(ctx.layers, function (l) { return !!SH.contents(l); }));
+      if (src.length < 2) ctx.fail("select two or more shape layers.");
+      var t = ctx.time, i;
+      var merged = ctx.comp.layers.addShape();
+      merged.name = "Merged Shapes";
+      merged.moveBefore(src[0]);
+      merged.transform.anchorPoint.setValue([0, 0]);
+      merged.transform.position.setValue([0, 0]);
+      ctx.created.push(merged);
+      var root = SH.contents(merged), flat = [], lost = [], uneven = [];
+      for (i = 0; i < src.length; i++) {
+        var L = src[i];
+        var g = root.addProperty(SH.GROUP);
+        g.name = L.name;
+        copyContents(L, merged, g);
+        var d = decompose(compMatrix(L, t)), tr = SH.groupTransform(g);
+        if (Math.abs(d.skew) > 85) ctx.warn(L.name + ": its parents shear it more than a shape group can (skew limited to 85°).");
+        tr.property("ADBE Vector Position").setValue(d.position);
+        tr.property("ADBE Vector Scale").setValue(d.scale);
+        tr.property("ADBE Vector Rotation").setValue(d.rotation);
+        tr.property("ADBE Vector Skew").setValue(U.clamp(d.skew, -85, 85));
+        tr.property("ADBE Vector Group Opacity").setValue(L.transform.opacity.valueAtTime(t, false));
+        if (L.parent || L.threeDLayer || animated(L)) flat.push(L.name);
+        if ((Math.abs(Math.abs(d.scale[0]) - Math.abs(d.scale[1])) > 0.01 || Math.abs(d.skew) > 0.01) && hasStroke(L)) uneven.push(L.name);
+        if (L.property("ADBE Effect Parade").numProperties || L.property("ADBE Mask Parade").numProperties || L.blendingMode !== BlendingMode.NORMAL) lost.push(L.name);
+      }
+      for (i = 0; i < src.length; i++) {
+        if (o.sources === "delete") src[i].remove();
+        else src[i].enabled = false;
+      }
+      app.run("layer.select", { layers: [merged.id] });
+      if (flat.length) ctx.warn("Merged groups keep only static transforms, flattened at the current time: " + flat.join(", ") + " (parent, animation or 3D).");
+      if (uneven.length) ctx.warn("Strokes in shape groups keep an even width, so strokes under non-uniform scale or skew look different: " + uneven.join(", ") + ".");
+      if (lost.length) ctx.warn("Masks, effects and blending modes aren't carried over: " + lost.join(", ") + ".");
+      return ctx.done("Merged " + src.length + " layers into \"Merged Shapes\".");
+    }
+  });
+})();
+
+// ---- src/tools/shapes/selector.js
+// Selector: selects every property of the chosen types in the selected layers (shape items at
+// any group depth, masks, layer transform properties) and nothing else. "Paths" are the Path
+// properties of path items. The types are toggle chips in the options (Shift-click).
+
+(function () {
+  var NAME = "Selector", SH = MK.shapes, U = MK.util;
+
+  var TYPES = [
+    ["paths", "Paths"], ["fills", "Fills"], ["strokes", "Strokes"], ["gradientFills", "Gradient Fills"],
+    ["gradientStrokes", "Gradient Strokes"], ["groups", "Groups"], ["groupTransforms", "Group Transforms"],
+    ["trimPaths", "Trim Paths"], ["repeaters", "Repeaters"], ["masks", "Masks"], ["position", "Position"],
+    ["scale", "Scale"], ["rotation", "Rotation"], ["opacity", "Opacity"], ["anchorPoint", "Anchor Point"]
+  ];
+  var ITEMS = {
+    fills: "ADBE Vector Graphic - Fill", strokes: "ADBE Vector Graphic - Stroke", gradientFills: "ADBE Vector Graphic - G-Fill",
+    gradientStrokes: "ADBE Vector Graphic - G-Stroke", groups: SH.GROUP, trimPaths: "ADBE Vector Filter - Trim",
+    repeaters: "ADBE Vector Filter - Repeater"
+  };
+  var TRANSFORM = { position: "ADBE Position", scale: "ADBE Scale", rotation: "ADBE Rotate Z", opacity: "ADBE Opacity", anchorPoint: "ADBE Anchor Point" };
+
+  // The properties of the enabled types (`on` is {type: true}) in one layer.
+  function collect(layer, on) {
+    var out = [], k, i;
+    SH.walk(SH.contents(layer), function (it) {
+      for (k in ITEMS) if (on[k] && ITEMS[k] === it.matchName) out.push(it);
+      if (on.paths && it.matchName === SH.PATH_ITEM) out.push(it.property(SH.PATH));
+      if (on.groupTransforms && SH.isGroup(it)) out.push(SH.groupTransform(it));
+    });
+    var masks = on.masks && layer.property("ADBE Mask Parade");
+    if (masks) for (i = 1; i <= masks.numProperties; i++) out.push(masks.property(i));
+    var tr = layer.property("ADBE Transform Group");
+    for (k in TRANSFORM) if (on[k] && tr && tr.property(TRANSFORM[k])) out.push(tr.property(TRANSFORM[k]));
+    return out;
+  }
+
+  function label(key) {
+    for (var i = 0; i < TYPES.length; i++) if (TYPES[i][0] === key) return TYPES[i][1];
+    return key;
+  }
+
+  MK.registerTool({
+    id: "selector",
+    name: NAME,
+    category: "Shapes",
+    description: "Selects every property of the chosen types (paths, fills, strokes...) in the selected layers.",
+    // A cursor arrow over a dashed selection rectangle (the arrow).
+    icon: [
+      { d: "M3 6 V3 H6 M9.5 3 H12.5 M16 3 H19 V6 M19 9.5 V11 M3 9.5 V12 M3 15 V17 H6 M9 17 H10.5", w: 1.4 },
+      { d: "M11.5 8.5 L11.5 21 L14.4 18.2 L16.6 22.6 L18.8 21.6 L16.6 17.3 L20.6 17.3 Z", fill: "accent" }
+    ],
+    options: [
+      {
+        key: "types", label: "Select", type: "custom", "default": ["paths"],
+        help: "The property types a click selects.",
+        validate: function (v) {
+          if (!U.isArray(v)) throw new Error("Select must be a list of property types.");
+          var out = [];
+          for (var i = 0; i < TYPES.length; i++) if (U.indexOf(v, TYPES[i][0]) >= 0) out.push(TYPES[i][0]);
+          if (!out.length) throw new Error("Turn on at least one property type to select.");
+          return out;
+        },
+        // Toggle chips: one checkbox per type, five to a row.
+        build: function (group, value, api) {
+          var boxes = [], row = null;
+          for (var i = 0; i < TYPES.length; i++) {
+            if (i % 5 === 0) row = api.widgets.row(group);
+            boxes.push(row.add("checkbox", undefined, TYPES[i][1]));
+          }
+          function set(v) { for (var j = 0; j < TYPES.length; j++) boxes[j].value = U.indexOf(v || [], TYPES[j][0]) >= 0; }
+          set(value);
+          return {
+            get: function () { return U.filter(U.map(TYPES, function (t) { return t[0]; }), function (k, j) { return boxes[j].value; }); },
+            set: set
+          };
+        }
+      }
+    ],
+    run: function (ctx, o) {
+      if (!ctx.layers.length) ctx.fail("select one or more layers.");
+      var on = {}, found = [], i;
+      for (i = 0; i < o.types.length; i++) on[o.types[i]] = true;
+      for (i = 0; i < ctx.layers.length; i++) found = found.concat(collect(ctx.layers[i], on));
+      if (!found.length) ctx.fail("the selected layers have no " + U.map(o.types, label).join(", ") + ".");
+      // layer.select keeps the layers and clears the property and keyframe selection.
+      app.run("layer.select", { layers: U.map(ctx.layers, function (l) { return l.id; }) });
+      for (i = 0; i < found.length; i++) found[i].selected = true;
+      return ctx.done("Selected " + found.length + (found.length === 1 ? " property" : " properties") + " in " + ctx.layers.length + (ctx.layers.length === 1 ? " layer." : " layers."));
+    }
+  });
+})();
+
+// ---- src/tools/shapes/shapesFromVector.js
+// Shapes from Vector: runs EffectCraft's Layer ▸ Create ▸ Create Shapes from Vector Layer on each
+// selected vector footage layer (SVG, PDF, Illustrator, EPS). The engine puts the new shape layer
+// directly above the source with the source's transform, parent and timing; the source is then
+// hidden or deleted. Other layers are skipped and listed.
+//
+// The command is reached with app.run("layer.create", {op: "shapesFromVector"}), which works
+// headless. app.findMenuCommandId("Create Shapes from Vector Layer") finds nothing (the menu
+// item is the "Create" command with an op), and app.executeCommand runs a command without
+// parameters, so it can't pass the op.
+
+(function () {
+  var NAME = "Shapes from Vector", U = MK.util;
+
+  function layerById(comp, id) {
+    for (var i = 1; i <= comp.numLayers; i++) if (comp.layer(i).id === id) return comp.layer(i);
+    return null;
+  }
+
+  MK.registerTool({
+    id: "shapesFromVector",
+    name: NAME,
+    category: "Shapes",
+    description: "Turns the selected SVG, PDF or Illustrator layers into editable shape layers.",
+    // A pen nib and a star outline (the star).
+    icon: [
+      "M3.5 20.5 L5.5 13.5 L8.8 11.2 L12.8 15.2 L10.5 18.5 Z",
+      "M3.5 20.5 L7.6 16.4",
+      { d: "S16.5 8 6 2.6 5 0", stroke: "accent", w: 1.6 }
+    ],
+    options: [
+      { key: "source", label: "Source layer", type: "dropdown", "default": "hide", items: [["hide", "Hide it"], ["delete", "Delete it"]] }
+    ],
+    run: function (ctx, o) {
+      var layers = MK.sel.byIndex(ctx.layers);
+      if (!layers.length) ctx.fail("select one or more vector footage layers (SVG, PDF or Illustrator).");
+      var skipped = [], made = 0;
+      for (var i = 0; i < layers.length; i++) {
+        var L = layers[i], r = null;
+        // The engine decides what is vector footage and changes nothing for other layers. (Not
+        // `L.source instanceof FootageItem`: after an Undo EffectCraft can hand back a stale
+        // layer object whose source reads null, see 37_shapes.js.)
+        try {
+          r = app.run("layer.create", { op: "shapesFromVector", layers: [L.id] });
+        } catch (e) {
+          skipped.push(L.name + (/not a vector/.test(U.errText(e)) ? "" : " (" + U.errText(e) + ")"));
+          continue;
+        }
+        for (var k = 0; k < r.layers.length; k++) {
+          var n = layerById(ctx.comp, r.layers[k]);
+          if (n) ctx.created.push(n);
+        }
+        for (k = 0; k < (r.skipped || []).length; k++) ctx.warn(r.skipped[k]);
+        made++;
+        if (o.source === "delete") L.remove();
+        else L.enabled = false;
+      }
+      if (!made) ctx.fail("none of the selected layers is vector footage (SVG, PDF or Illustrator): " + skipped.join(", ") + ".");
+      return ctx.done("Converted " + made + (made === 1 ? " layer" : " layers") + " to shapes." + (skipped.length ? " Skipped (not vector footage): " + skipped.join(", ") + "." : ""));
+    }
+  });
+})();
+
+// ---- src/tools/shapes/strokeStyle.js
+// Toggle Stroke Style: sets the selected strokes (stroke items, or properties inside them; else
+// every stroke in the selected shape layers) to the style after the first stroke's current one:
+// solid / butt cap -> solid / round cap -> dashed (dash and gap = 2 x width, round cap) ->
+// dotted (gap = 2 x width, round cap) -> solid / butt cap. Styles left out are skipped.
+// Gradient strokes count too.
+//
+// EffectCraft draws no dashes when Dash is 0 (the stroke is solid), so dotted uses a dash of
+// DOT px with round caps, which draws one round dot per dash. Any Dash 2 / Gap 2 and Dash 3 /
+// Gap 3 get the same values, so the pattern stays even.
+
+(function () {
+  var NAME = "Toggle Stroke Style", SH = MK.shapes, U = MK.util;
+  var KINDS = ["ADBE Vector Graphic - Stroke", "ADBE Vector Graphic - G-Stroke"];
+  var STYLES = [["solidButt", "solid, butt cap"], ["solidRound", "solid, round cap"], ["dashed", "dashed"], ["dotted", "dotted"]];
+  var DOT = 0.01;
+
+  function isStroke(p) { return !!p && U.indexOf(KINDS, p.matchName) >= 0; }
+  // Gradient strokes' own properties have no ADBE match names in EffectCraft 0.14, so fall back
+  // to the internal id ("cap", "width", "dashes").
+  function sub(stroke, matchName, id) { return stroke.property(matchName) || stroke.property(id); }
+
+  // The stroke a selected property is, or is inside of.
+  function strokeOf(p) {
+    for (var q = p, n = 0; q && !(q instanceof Layer) && n < 100; q = q.parentProperty, n++) if (isStroke(q)) return q;
+    return null;
+  }
+  function key(p) {
+    var chain = [];
+    for (var q = p, n = 0; q && !(q instanceof Layer) && n < 100; q = q.parentProperty, n++) chain.unshift(q.propertyIndex);
+    return MK.sel.layerOf(p).id + ":" + chain.join(".");
+  }
+
+  function strokes(ctx) {
+    var out = [], seen = {}, sel = ctx.comp.selectedProperties, i;
+    function add(s) { var k = key(s); if (!U.has(seen, k)) { seen[k] = 1; out.push(s); } }
+    for (i = 0; i < sel.length; i++) { var s = strokeOf(sel[i]); if (s) add(s); }
+    if (out.length) return out;
+    for (i = 0; i < ctx.layers.length; i++) SH.walk(SH.contents(ctx.layers[i]), function (it) { if (isStroke(it)) add(it); });
+    return out;
+  }
+
+  function styleOf(stroke, t) {
+    var cap = sub(stroke, "ADBE Vector Stroke Line Cap", "cap").valueAtTime(t, false);
+    var dash = sub(stroke, "ADBE Vector Stroke Dashes", "dashes").property("ADBE Vector Stroke Dash 1").valueAtTime(t, false);
+    if (dash <= 0) return cap === 1 ? "solidButt" : cap === 2 ? "solidRound" : null;
+    return dash < 0.5 ? "dotted" : "dashed";
+  }
+
+  function put(p, v, t) {
+    if (p.numKeys) p.setValueAtTime(t, v);
+    else p.setValue(v);
+  }
+
+  function apply(stroke, style, o, t) {
+    var w = sub(stroke, "ADBE Vector Stroke Width", "width").valueAtTime(t, false);
+    put(sub(stroke, "ADBE Vector Stroke Line Cap", "cap"), style === "solidButt" ? 1 : 2, t);
+    var dash = style === "dashed" ? o.dash * w : style === "dotted" ? DOT : 0;
+    var dashes = sub(stroke, "ADBE Vector Stroke Dashes", "dashes");
+    for (var i = 1; i <= dashes.numProperties; i++) {
+      var p = dashes.property(i), m = p.matchName;
+      if (m.indexOf("ADBE Vector Stroke Dash") === 0) put(p, dash, t);
+      else if (dash && m.indexOf("ADBE Vector Stroke Gap") === 0) put(p, o.gap * w, t);
+    }
+  }
+
+  var options = U.map(STYLES, function (s) { return { key: s[0], label: "Include " + s[1], type: "checkbox", "default": true }; });
+  options.push({ key: "dash", label: "Dash (x width)", type: "number", "default": 2, min: 0.1, max: 50 });
+  options.push({ key: "gap", label: "Gap (x width)", type: "number", "default": 2, min: 0.1, max: 50, help: "For dashed and dotted." });
+
+  MK.registerTool({
+    id: "strokeStyle",
+    name: NAME,
+    category: "Shapes",
+    description: "Cycles the selected strokes through solid, round-capped, dashed and dotted.",
+    // A solid line above a dashed line (the dashed line).
+    icon: [
+      { d: "M3 8 H21", w: 2.2 },
+      { d: "M3 16 H7 M10 16 H14 M17 16 H21", stroke: "accent", w: 2.2 }
+    ],
+    options: options,
+    run: function (ctx, o) {
+      var on = U.filter(U.map(STYLES, function (s) { return s[0]; }), function (k) { return o[k]; });
+      if (!on.length) ctx.fail("turn on at least one style in the options (Shift-click).");
+      var list = strokes(ctx);
+      if (!list.length) ctx.fail("select strokes, or shape layers that have strokes.");
+      var t = ctx.time, at = -1, i;
+      for (i = 0; i < STYLES.length; i++) if (STYLES[i][0] === styleOf(list[0], t)) at = i;
+      var next = null;
+      for (i = 1; i <= STYLES.length && !next; i++) {
+        var cand = STYLES[(at + i + STYLES.length) % STYLES.length];
+        if (o[cand[0]]) next = cand;
+      }
+      for (i = 0; i < list.length; i++) apply(list[i], next[0], o, t);
+      return ctx.done("Set " + list.length + (list.length === 1 ? " stroke" : " strokes") + " to " + next[1] + ".");
     }
   });
 })();

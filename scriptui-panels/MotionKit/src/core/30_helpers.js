@@ -431,7 +431,9 @@ MK.shapes = (function () {
   S.GROUP = "ADBE Vector Group";
   S.PATH_ITEM = "ADBE Vector Shape - Group";
   S.PATH = "ADBE Vector Shape";
-  S.contents = function (layer) { return layer instanceof ShapeLayer ? layer.property("ADBE Root Vectors Group") : null; };
+  // By the Contents group, not `instanceof ShapeLayer`: after an Undo, EffectCraft can reuse a
+  // removed layer's id and hand back that layer's old wrapper type.
+  S.contents = function (layer) { return (layer && layer.property("ADBE Root Vectors Group")) || null; };
   S.isGroup = function (p) { return p && p.matchName === S.GROUP; };
   // The contents (child list) of a group, or the root contents itself.
   S.inner = function (p) { return S.isGroup(p) ? p.property("ADBE Vectors Group") : p; };
