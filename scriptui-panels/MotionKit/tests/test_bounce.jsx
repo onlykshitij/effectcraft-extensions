@@ -21,13 +21,14 @@ T.check(!bad.ok && /at least two keyframes/.test(bad.message) && /two keyframes/
 T.check(fx.numProperties === 0 && op.expression === "", "a refused run changes nothing");
 
 T.select(comp, [ball], [pos, rot]);
-var r = MotionKit.run("bounce", { gravity: 2000 });
+// Hop Gravity 5 over a 400 px range: 2000 px/s².
+var r = MotionKit.run("bounce", { hopGravity: 5 });
 T.check(r.ok && /2 properties/.test(r.message), "bounce added: " + r.message);
 T.check(pos.expression.split("\n")[0] === "// Motion Kit: bounce", "expression starts with the Motion Kit mark");
 function ctrl(name) { var e = fx.property(name); return e ? e.property(1).value : undefined; }
 T.check(fx.numProperties === 4, "one control set for both properties (" + fx.numProperties + " effects)");
-T.check(T.near(ctrl("Bounce – Amplitude"), 0.7) && ctrl("Bounce – Gravity") === 2000 && ctrl("Bounce – Max Jumps") === 9 && !ctrl("Bounce – Jump In/Out"),
-  "controls take the run's options (amplitude 0.7, gravity 2000, 9 jumps, in/out off)");
+T.check(T.near(ctrl("Bounce – Amplitude"), 0.7) && ctrl("Bounce – Hop Gravity") === 5 && ctrl("Bounce – Max Jumps") === 9 && !ctrl("Bounce – Jump In/Out"),
+  "controls take the run's options (amplitude 0.7, hop gravity 5, 9 jumps, in/out off)");
 T.check(pos.expressionError === "" && rot.expressionError === "", "expressions compile");
 
 // Between keys: unchanged.
@@ -63,7 +64,8 @@ for (var i = 1; i < peaks.length; i++) if (!(peaks[i] < peaks[i - 1])) shrinking
 T.check(shrinking && peaks[0] === Math.max.apply(null, peaks), "the first hop is the biggest overshoot and each hop is lower");
 T.check(T.near(pos.valueAtTime(5, false), [500, 300]), "it returns to the final value");
 T.check(T.near(pos.valueAtTime(3, false)[1], 300), "only the direction of travel moves");
-T.check(T.near(rot.valueAtTime(2 + 63 / 2000, false), 90 + 63 * 63 / 4000, 1e-3), "1D property: first hop of rotation is 0.99 degrees");
+// Rotation (range 90°) gets 5 × 90 = 450°/s²: its first hop peaks at the same time as position's.
+T.check(T.near(rot.valueAtTime(2.14, false), 90 + 63 * 63 / 900, 1e-3), "1D property: rotation's first hop peaks 4.41° past 90 at t = 2.14, like position's");
 
 // The controls drive it.
 fx.property("Bounce – Max Jumps").property(1).setValue(1);
@@ -73,8 +75,8 @@ T.check(T.near(pos.valueAtTime(0.86, false)[0], 100 - 19.6, 0.01), "Jump In/Out 
 T.check(T.near(pos.valueAtTime(0.5, false)[0], 100), "before the hops the value is the first key's");
 
 // Running again reuses the controls and keeps their values.
-var again = MotionKit.run("bounce", { gravity: 9999 });
-T.check(again.ok && fx.numProperties === 4 && ctrl("Bounce – Gravity") === 2000, "a second run reuses the controls (values kept)");
+var again = MotionKit.run("bounce", { hopGravity: 99 });
+T.check(again.ok && fx.numProperties === 4 && ctrl("Bounce – Hop Gravity") === 5, "a second run reuses the controls (values kept)");
 
 // A second layer gets its own controls.
 var ball2 = T.solid(comp, "Ball 2", 50, 50);
@@ -82,6 +84,23 @@ ball2.transform.scale.setValueAtTime(0, [100, 100]);
 ball2.transform.scale.setValueAtTime(1, [150, 150]);
 T.select(comp, [ball2], [ball2.transform.scale]);
 T.check(MotionKit.run("bounce").ok && ball2.property("ADBE Effect Parade").numProperties === 4, "each layer gets its own control set");
+// Scale moves 50 % where position moves hundreds of pixels; with the default Hop Gravity (10 ranges/s²)
+// its first hop is still 5.5 % of A² of the range, not a sub-frame blip.
+T.check(T.near(ball2.transform.scale.valueAtTime(1.07, false)[0], 151.225, 0.01), "scale bounces visibly: the first hop peaks 1.2 % past 150 at t = 1.07");
+
+// Key i of prop eased to a stop on both sides (Easy Ease: speed 0), as the timeline's Easy Ease does.
+function easeStop(prop, i) {
+  var z = [], e = prop.keyInTemporalEase(i);
+  for (var k = 0; k < e.length; k++) z.push(new KeyframeEase(0, 33.33));
+  prop.setInterpolationTypeAtKey(i, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
+  prop.setTemporalEaseAtKey(i, z, z);
+}
+// A last key that eases to a stop leaves no speed to bounce with, and the message says so.
+easeStop(ball2.transform.scale, 2);
+T.select(comp, [ball2], [ball2.transform.scale]);
+var still = MotionKit.run("bounce");
+T.check(still.ok && /It stops at the last keyframe/.test(still.message) && T.near(ball2.transform.scale.valueAtTime(1.07, false)[0], 150), "an eased last key: no bounce, and the message explains why: " + still.message);
+T.check(!/stop/.test(r.message), "linear last keys get no such note");
 
 // Expressions Motion Kit didn't write: ask, keep them on "no".
 op.setValueAtTime(2, 50);

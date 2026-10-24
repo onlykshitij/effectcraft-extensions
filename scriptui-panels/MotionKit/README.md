@@ -54,7 +54,7 @@ The Motion Kit panel has every tool except Ease Copy and Move Anchor Point, whic
 
 | Tool | What it does |
 |---|---|
-| Bounce | After the last keyframe, the value bounces like a ball. Controls: Amplitude, Gravity, Max Jumps and Jump In/Out (also before the first key). |
+| Bounce | After the last keyframe, the value bounces like a ball. Controls: Amplitude, Hop Gravity, Max Jumps and Jump In/Out (also before the first key). Hop Gravity is relative to the keyframes' range, so the same value gives Position, Scale and Rotation the same bounce. |
 | Elastic | A decaying spring overshoot after the last keyframe. Controls: Amplitude, Frequency, Decay and Jump In/Out. |
 | Loop In/Out | Adds a cycle, pingpong, offset or continue loop before, after or on both sides of the keyframes. |
 | Ease Keyframes | Sets the ease on the selected keys from a draggable speed-curve editor or presets. |

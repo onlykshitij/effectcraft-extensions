@@ -50,4 +50,18 @@ T.check(T.near(pos.valueAtTime(0.9, false)[0], 100 - 400 * wave(0.1), 1e-3), "Ju
 fx.property("Elastic – Decay").property(1).setValue(0);
 T.check(T.near(pos.valueAtTime(2.1, false)[0], 500 + 400 * 0.06 * Math.sin(2 * Math.PI * 2.5 * 0.1), 1e-3), "the Decay control drives it");
 
+// Key i of prop eased to a stop on both sides (Easy Ease: speed 0), as the timeline's Easy Ease does.
+function easeStop(prop, i) {
+  var z = [], e = prop.keyInTemporalEase(i);
+  for (var k = 0; k < e.length; k++) z.push(new KeyframeEase(0, 33.33));
+  prop.setInterpolationTypeAtKey(i, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
+  prop.setTemporalEaseAtKey(i, z, z);
+}
+// Position eased to a stop and scale on Hold: both stop at the last key, so the note counts both.
+easeStop(pos, pos.numKeys);
+scl.setInterpolationTypeAtKey(scl.numKeys, KeyframeInterpolationType.HOLD, KeyframeInterpolationType.HOLD);
+T.select(comp, [box], [pos, scl]);
+var still = MotionKit.run("elastic");
+T.check(still.ok && /They stop at the last keyframe/.test(still.message), "eased or Hold last keys: the message says nothing moves after them: " + still.message);
+
 T.done();

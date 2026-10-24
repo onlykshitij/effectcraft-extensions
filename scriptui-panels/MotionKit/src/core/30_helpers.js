@@ -153,10 +153,14 @@ MK.expr = (function () {
   };
   X.set = function (prop, toolId, body) { prop.expression = X.make(toolId, body); };
   // "Bounce added to 2 properties. Skipped 1 without two keyframes. Kept 1 existing expression."
-  X.report = function (toolName, applied, invalid, kept, needs) {
+  // resting: how many of the applied properties stop at their last keyframe (MK.keys.atRest),
+  // for tools that carry the arriving speed on.
+  X.report = function (toolName, applied, invalid, kept, needs, resting) {
     var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties.");
     if (invalid) s += " Skipped " + invalid + " without " + needs + ".";
     if (kept) s += " Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions.");
+    if (resting) s += " " + (resting === applied ? (applied === 1 ? "It stops" : "They stop") : resting + " of them stop") +
+      " at the last keyframe (eased or Hold), so nothing moves after it: make that keyframe Linear or ease it less.";
     return s;
   };
   // decide() then set() on each: body is a string or function(prop) -> string.
@@ -354,6 +358,16 @@ MK.keys = (function () {
       k.spatialAutoBezier = prop.keySpatialAutoBezier(i);
     }
     return k;
+  };
+  // True when key i arrives (arriving) or leaves with no speed: Hold, or Bezier with every ease
+  // speed 0 (Easy Ease). Tools that carry the speed on past the key have nothing to use there.
+  K.atRest = function (prop, i, arriving) {
+    var interp = arriving ? prop.keyInInterpolationType(i) : prop.keyOutInterpolationType(i);
+    if (interp === KeyframeInterpolationType.HOLD) return true;
+    if (interp !== KeyframeInterpolationType.BEZIER) return false;
+    var e = arriving ? prop.keyInTemporalEase(i) : prop.keyOutTemporalEase(i);
+    for (var k = 0; k < e.length; k++) if (Math.abs(e[k].speed) > 1e-6) return false;
+    return true;
   };
   K.readAll = function (prop) {
     var out = [];

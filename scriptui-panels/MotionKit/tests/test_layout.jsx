@@ -199,8 +199,8 @@ T.check(js(P([[0, -1], "x", [1.6, 1.4]], 4).spans) === "[[1,1],[1,1],[2,1]]", "b
 
 // ---- options validation
 var O = MotionKit.options, bounce = MotionKit.tools.bounce;
-var v1 = O.validate(bounce, { amplitude: 2, maxJumps: 3.6, gravity: "x", jumpInOut: true, extra: 1 }, false).values;
-T.check(v1.amplitude === 1 && v1.maxJumps === 4 && v1.gravity === 5000 && v1.jumpInOut === true && v1.extra === undefined, "lenient options clamp, round and default");
+var v1 = O.validate(bounce, { amplitude: 2, maxJumps: 3.6, hopGravity: "x", gravity: 5000, jumpInOut: true, extra: 1 }, false).values;
+T.check(v1.amplitude === 1 && v1.maxJumps === 4 && v1.hopGravity === 10 && v1.jumpInOut === true && v1.extra === undefined && v1.gravity === undefined, "lenient options clamp, round and default; keys a tool no longer has are dropped");
 var v2 = O.validate(bounce, { amplitude: 2 }, true);
 T.check(v2.errors.length === 1 && /Amplitude must be from 0 to 1/.test(v2.errors[0]), "strict options report the range");
 T.check(!O.save(bounce, { amplitude: -1 }).ok && O.get(bounce).amplitude === 0.7, "invalid options aren't saved");
