@@ -20,7 +20,7 @@ MK.layout = (function () {
 
   function defaultStyle(p) {
     return {
-      cellSize: 44, spacing: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null,
+      cellSize: 44, spacing: 4, columns: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null,
       buttonMode: "iconName", hideTitle: false, fg: "#D8D8D8", showCommandBox: p === 0
     };
   }
@@ -29,6 +29,7 @@ MK.layout = (function () {
   var STYLE_RULES = {
     cellSize: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 24, 96) : undefined; },
     spacing: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 32) : undefined; },
+    columns: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 1, 12) : undefined; },
     panelBg: function (v) { return v === null ? null : U.normHex(v) || undefined; },
     cellBg: function (v) { return U.normHex(v) || undefined; },
     cellBorder: function (v) { return v === null ? null : U.normHex(v) || undefined; },

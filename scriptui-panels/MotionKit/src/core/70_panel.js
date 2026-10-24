@@ -25,10 +25,6 @@ MK.ui.cellSize = function (style) {
   return s > 32 ? { w: Math.round(s * 1.6), h: s + 12, compact: false } : { w: s + 88, h: s, compact: true };
 };
 
-MK.ui.columnsFor = function (width, cellW, spacing) {
-  if (!(width > 0)) return 4;
-  return Math.max(1, Math.floor((width + spacing) / (cellW + spacing)));
-};
 
 // What a button shows: name, icon, image, colours, and whether it is missing or flagged.
 MK.ui.look = function (item, style, library) {
@@ -152,12 +148,6 @@ MK.ui.buildPanel = function (host, index) {
   P.layout = function () { return P.state.layouts[P.state.active]; };
   P.items = function () { return P.layout().panels[P.index].items; };
 
-  function width() {
-    var b = host.bounds;
-    var m = U.isArray(host.margins) ? host.margins[0] + host.margins[2] : 2 * (Number(host.margins) || 0);
-    return b && b[2] - b[0] > 0 ? b[2] - b[0] - m : 0;
-  }
-
   function clear() {
     for (var n = 0; n < 1000 && host.children.length; n++) host.remove(host.children[host.children.length - 1]);
   }
@@ -203,7 +193,9 @@ MK.ui.buildPanel = function (host, index) {
     var sz = MK.ui.cellSize(pc.style), sp = pc.style.spacing, items = pc.items;
     P.sz = sz;
     P.sp = sp;
-    P.cols = MK.ui.columnsFor(width(), sz.w, sp);
+    // EffectCraft reports a panel's bounds as its content size, not the dock's, so the column
+    // count is a style setting rather than measured.
+    P.cols = pc.style.columns;
     var g = host.add("group");
     g.orientation = "column";
     g.alignChildren = ["left", "top"];
@@ -385,11 +377,10 @@ MK.ui.buildPanel = function (host, index) {
     try { host.layout.layout(true); } catch (e2) {}
   };
 
-  // Rebuilds when settings changed since the last build (or the width fits other columns).
+  // Rebuilds when settings changed since the last build.
   P.refresh = function () {
     if (P.closed) return;
     if (MK.settings.rev() !== P.rev) P.rebuild();
-    else if (P.sz && MK.ui.columnsFor(width(), P.sz.w, P.sp) !== P.cols) P.rebuild();
   };
 
   P.close = function () {

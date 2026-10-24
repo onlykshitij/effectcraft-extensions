@@ -272,6 +272,7 @@ MK.layoutDialog = (function () {
     }
     D.styleCell = number("Cell size", "cellSize", 24, 96);
     D.styleSpacing = number("Spacing", "spacing", 0, 32);
+    D.styleCols = number("Columns", "columns", 1, 12);
     D.stylePanelBg = color("Panel background", "panelBg", true, "empty: theme colour");
     D.styleCellBg = color("Button colour", "cellBg", false);
     D.styleBorder = color("Button border", "cellBorder", true, "empty: none");
@@ -556,6 +557,7 @@ MK.layoutDialog = (function () {
       D.stylePanel.selection = D.panel;
       D.styleCell.text = String(s.cellSize);
       D.styleSpacing.text = String(s.spacing);
+      D.styleCols.text = String(s.columns);
       D.stylePanelBg.set(s.panelBg);
       D.styleCellBg.set(s.cellBg);
       D.styleBorder.set(s.cellBorder);

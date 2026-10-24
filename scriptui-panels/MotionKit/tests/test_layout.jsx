@@ -15,13 +15,13 @@ T.check(d.panels[2].title === "Shapes" && ids(d, 2) === "extractShapes,mergeShap
 T.check(d.panels[3].title === "Comp" && ids(d, 3) === "cropComp,unprecomp,duplicateComp,gifExport", "panel 4 Comp in spec order");
 var s0 = d.panels[0].style, s1 = d.panels[1].style;
 T.check(s0.cellSize === 44 && s0.spacing === 4 && s0.panelBg === null && s0.cellBg === "#2B2B2B" && s0.cellBorder === null &&
-  s0.buttonMode === "iconName" && s0.hideTitle === false && s0.fg === "#D8D8D8", "default style values");
+  s0.buttonMode === "iconName" && s0.hideTitle === false && s0.fg === "#D8D8D8" && s0.columns === 4, "default style values");
 T.check(s0.showCommandBox === true && s1.showCommandBox === false, "command box on panel 1 only");
 
 // ---- normalize: every value validated, unknown ids kept
 var bad = {
   panels: [
-    { title: "  ", style: { cellSize: 500, spacing: -3, panelBg: "#abc", cellBg: "nope", cellBorder: "#00ff00", buttonMode: "huge", hideTitle: "yes", fg: 12, showCommandBox: 0 },
+    { title: "  ", style: { cellSize: 500, spacing: -3, columns: 99, panelBg: "#abc", cellBg: "nope", cellBorder: "#00ff00", buttonMode: "huge", hideTitle: "yes", fg: 12, showCommandBox: 0 },
       items: ["bounce", { id: "futureTool", name: "Future", showIcon: false, bg: "#zzzzzz", accent: "#112233" }, { id: "" }, null, 5, "bounce"] },
     "junk"
   ]
@@ -29,7 +29,7 @@ var bad = {
 var n = L.normalize(bad);
 var ns = n.panels[0].style;
 T.check(n.panels.length === 4 && n.panels[0].title === "Panel 1" && n.panels[1].title === "Panel 2", "missing and blank panels get defaults");
-T.check(ns.cellSize === 96 && ns.spacing === 0, "numbers clamped (cellSize 96, spacing 0)");
+T.check(ns.cellSize === 96 && ns.spacing === 0 && ns.columns === 12, "numbers clamped (cellSize 96, spacing 0, columns 12)");
 T.check(ns.panelBg === "#AABBCC" && ns.cellBg === "#2B2B2B" && ns.cellBorder === "#00FF00" && ns.fg === "#D8D8D8", "colours normalised or defaulted");
 T.check(ns.buttonMode === "iconName" && ns.hideTitle === false && ns.showCommandBox === true, "bad enums and booleans defaulted");
 T.check(ids(n, 0) === "bounce,futureTool", "bad items dropped, duplicates removed, unknown id kept");

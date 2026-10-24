@@ -59,7 +59,12 @@ T.check($.evalFile(MKT_DIR + "/dist/motionkit-lib.jsx") === null, "motionkit-lib
 
 // ---- mouse input on panel 1
 var W1 = wins[0], cw = P1.sz.w, ch = P1.sz.h, sp = P1.sp;
-T.check(P1.cols >= 3, "panel 1 lays out " + P1.cols + " columns of " + cw + " x " + ch + " px");
+T.check(P1.cols === 4, "panel 1 lays out the style's " + P1.cols + " columns of " + cw + " x " + ch + " px");
+// Every button drawn, no row wider than the column count (a drop once laid out 6 per row).
+function rowsFit(P) {
+  for (var r = 0; r < P.grid.children.length; r++) if (P.grid.children[r].children.length > P.cols) return false;
+  return P.cells.length === P.items().length;
+}
 T.mouse(W1, P1.cells[1], "mousemove", 5, 5);
 T.check(P1.hover === 1, "hover tracks the button under the pointer");
 T.mouse(W1, P1.cells[1], "mouseout", 5, 5);
@@ -78,6 +83,12 @@ T.check(ind, "a drop indicator line is drawn at the slot");
 T.mouse(W1, P1.cells[2], "mouseup", cw - 3, 10);
 T.check(order(0).indexOf("elastic,loop,bounce,easeKeys") === 0, "the drop saves the new order: " + order(0));
 T.check(cellIds(P1).indexOf("elastic,loop,bounce,") === 0, "and the panel shows it");
+T.check(P1.cols === 4 && rowsFit(P1), "after the drop every button is still shown, " + P1.cols + " per row");
+L.save(L.setStyle(L.get(), 0, { columns: 3 }));
+P1.refresh();
+T.check(P1.cols === 3 && rowsFit(P1), "the Columns style re-lays the grid (3 per row)");
+L.save(L.setStyle(L.get(), 0, { columns: 4 }));
+P1.refresh();
 
 // A drop outside the grid does nothing.
 var before = order(0);

@@ -86,9 +86,15 @@ MK.util = (function () {
     }
     return s;
   };
+  // EffectCraft paints ScriptUI pen and brush colours as linear light (egui::Rgba in
+  // scriptui_view.rs), which brightens them; sending each channel's linear value cancels that.
+  // shortcut: applies to every EffectCraft version; gate it on app.version once EffectCraft fixes it.
+  U.LINEAR_UI = typeof BridgeTalk !== "undefined" && BridgeTalk.appName === "effectcraft";
+  function toLinear(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
   // [r, g, b, a] for ScriptUI pens and brushes.
   U.rgba = function (hex, alpha) {
     var c = U.hexToRgb(hex) || [0.5, 0.5, 0.5];
+    if (U.LINEAR_UI) c = [toLinear(c[0]), toLinear(c[1]), toLinear(c[2])];
     return [c[0], c[1], c[2], alpha === undefined ? 1 : alpha];
   };
   // Blend two hex colours (t = 0 gives a, 1 gives b).
@@ -191,7 +197,7 @@ MK.layout = (function () {
 
   function defaultStyle(p) {
     return {
-      cellSize: 44, spacing: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null,
+      cellSize: 44, spacing: 4, columns: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null,
       buttonMode: "iconName", hideTitle: false, fg: "#D8D8D8", showCommandBox: p === 0
     };
   }
@@ -200,6 +206,7 @@ MK.layout = (function () {
   var STYLE_RULES = {
     cellSize: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 24, 96) : undefined; },
     spacing: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 32) : undefined; },
+    columns: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 1, 12) : undefined; },
     panelBg: function (v) { return v === null ? null : U.normHex(v) || undefined; },
     cellBg: function (v) { return U.normHex(v) || undefined; },
     cellBorder: function (v) { return v === null ? null : U.normHex(v) || undefined; },
@@ -1752,10 +1759,6 @@ MK.ui.cellSize = function (style) {
   return s > 32 ? { w: Math.round(s * 1.6), h: s + 12, compact: false } : { w: s + 88, h: s, compact: true };
 };
 
-MK.ui.columnsFor = function (width, cellW, spacing) {
-  if (!(width > 0)) return 4;
-  return Math.max(1, Math.floor((width + spacing) / (cellW + spacing)));
-};
 
 // What a button shows: name, icon, image, colours, and whether it is missing or flagged.
 MK.ui.look = function (item, style, library) {
@@ -1879,12 +1882,6 @@ MK.ui.buildPanel = function (host, index) {
   P.layout = function () { return P.state.layouts[P.state.active]; };
   P.items = function () { return P.layout().panels[P.index].items; };
 
-  function width() {
-    var b = host.bounds;
-    var m = U.isArray(host.margins) ? host.margins[0] + host.margins[2] : 2 * (Number(host.margins) || 0);
-    return b && b[2] - b[0] > 0 ? b[2] - b[0] - m : 0;
-  }
-
   function clear() {
     for (var n = 0; n < 1000 && host.children.length; n++) host.remove(host.children[host.children.length - 1]);
   }
@@ -1930,7 +1927,9 @@ MK.ui.buildPanel = function (host, index) {
     var sz = MK.ui.cellSize(pc.style), sp = pc.style.spacing, items = pc.items;
     P.sz = sz;
     P.sp = sp;
-    P.cols = MK.ui.columnsFor(width(), sz.w, sp);
+    // EffectCraft reports a panel's bounds as its content size, not the dock's, so the column
+    // count is a style setting rather than measured.
+    P.cols = pc.style.columns;
     var g = host.add("group");
     g.orientation = "column";
     g.alignChildren = ["left", "top"];
@@ -2112,11 +2111,10 @@ MK.ui.buildPanel = function (host, index) {
     try { host.layout.layout(true); } catch (e2) {}
   };
 
-  // Rebuilds when settings changed since the last build (or the width fits other columns).
+  // Rebuilds when settings changed since the last build.
   P.refresh = function () {
     if (P.closed) return;
     if (MK.settings.rev() !== P.rev) P.rebuild();
-    else if (P.sz && MK.ui.columnsFor(width(), P.sz.w, P.sp) !== P.cols) P.rebuild();
   };
 
   P.close = function () {
@@ -2454,6 +2452,7 @@ MK.layoutDialog = (function () {
     }
     D.styleCell = number("Cell size", "cellSize", 24, 96);
     D.styleSpacing = number("Spacing", "spacing", 0, 32);
+    D.styleCols = number("Columns", "columns", 1, 12);
     D.stylePanelBg = color("Panel background", "panelBg", true, "empty: theme colour");
     D.styleCellBg = color("Button colour", "cellBg", false);
     D.styleBorder = color("Button border", "cellBorder", true, "empty: none");
@@ -2738,6 +2737,7 @@ MK.layoutDialog = (function () {
       D.stylePanel.selection = D.panel;
       D.styleCell.text = String(s.cellSize);
       D.styleSpacing.text = String(s.spacing);
+      D.styleCols.text = String(s.columns);
       D.stylePanelBg.set(s.panelBg);
       D.styleCellBg.set(s.cellBg);
       D.styleBorder.set(s.cellBorder);

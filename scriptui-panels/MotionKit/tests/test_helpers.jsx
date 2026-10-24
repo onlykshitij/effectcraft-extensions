@@ -176,4 +176,9 @@ var pathItem = g2.property("ADBE Vectors Group").addProperty("ADBE Vector Shape 
 T.check(SH.paths(sh).length === 1 && SH.paths(sh)[0].prop.matchName === "ADBE Vector Shape" && SH.paths(sh)[0].groups.length === 2, "paths lists path properties with their groups");
 T.check(SH.contents(lay) === null && SH.isGroup(g1) && !SH.isGroup(rect), "contents is null for non-shape layers; isGroup");
 
+// ---- UI colours: sent as linear, so EffectCraft's linear-to-sRGB step shows the hex colour
+function toSrgb(v) { return v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055; }
+var lin = U.rgba("#2B2B2B");
+T.check(U.LINEAR_UI && Math.abs(toSrgb(lin[0]) * 255 - 43) < 0.5 && lin[3] === 1, "rgba sends #2B2B2B as linear " + lin[0].toFixed(4) + " (shows as 43)");
+
 T.done();
