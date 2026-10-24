@@ -290,6 +290,8 @@ MK.layoutDialog = (function () {
     D.styleFg = color("Icon and text", "fg", false);
     D.styleAccent = color("Accent", "accent", false);
     D.styleRadius = number("Corner radius", "radius", 0, 16);
+    D.styleHover = number("Hover highlight", "hover", 0, 100, "% ");
+    D.styleHover.helpTip = "How much a button lightens under the pointer. 0 turns it off; 100 is EffectCraft's plain button.";
     var r1 = W.row(tab);
     W.label(r1, "Buttons show", 110);
     D.styleMode = r1.add("dropdownlist", undefined, ["Icon", "Name", "Icon and name"]);
@@ -577,6 +579,7 @@ MK.layoutDialog = (function () {
       D.styleFg.set(s.fg);
       D.styleAccent.set(s.accent);
       D.styleRadius.text = String(s.radius);
+      D.styleHover.text = String(s.hover);
       D.styleMode.selection = U.indexOf(MK.layout.MODES, s.buttonMode);
       D.styleHide.value = s.hideTitle;
       D.styleCmd.value = s.showCommandBox;

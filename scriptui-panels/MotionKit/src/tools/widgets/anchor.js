@@ -29,44 +29,59 @@
       var gap = Math.max(3, Math.round(w.w * 0.05)), side = Math.min(w.w, w.h);
       var sq = Math.max(8, Math.floor((side - 2 * Math.round(side * 0.08) - 2 * gap) / 3));
       var x0 = Math.round((w.w - 3 * sq - 2 * gap) / 2), y0 = Math.round((w.h - 3 * sq - 2 * gap) / 2);
-      var at = {}, inset = Math.max(3, Math.round(sq * 0.16));
+      var at = {}, inset = Math.max(3, Math.round(sq * 0.16)), hover = w.editing ? 0 : w.style.hover, hg = Math.floor(gap / 2);
       w.onShift = function () { w.options("moveAnchor"); };
       w.squares = {};
-      // The squares are painted together on the widget (four draw operations, not two per
-      // square); the parts on top are invisible and carry the clicks and help tips.
-      w.paint = function (g) {
-        var c = at.c, k, p;
+      // Paints squares `keys`, shifted by (dx, dy). Without the hover highlight they are painted
+      // together on the widget (four draw operations, not two per square) and the parts on top
+      // are invisible. With it, each part paints its square over the native button, reaching
+      // half the gap around it: the squares are too bright to sit on the native button, so the
+      // highlight is the ring in the gap.
+      function squares(g, keys, dx, dy) {
+        var k, p, i, edges = false;
+        if (U.indexOf(keys, "c") >= 0) {
+          g.newPath();
+          g.rectPath(at.c[0] + dx, at.c[1] + dy, sq, sq);
+          g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchorEdge)));
+        }
         g.newPath();
-        g.rectPath(c[0], c[1], sq, sq);
-        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchorEdge)));
-        g.newPath();
-        for (k in at) if (U.has(at, k)) {
+        for (i = 0; i < keys.length; i++) {
+          k = keys[i];
           p = at[k];
-          if (k === "c") g.rectPath(p[0] + inset, p[1] + inset, sq - 2 * inset, sq - 2 * inset);
-          else g.rectPath(p[0], p[1], sq, sq);
+          if (k === "c") g.rectPath(p[0] + dx + inset, p[1] + dy + inset, sq - 2 * inset, sq - 2 * inset);
+          else g.rectPath(p[0] + dx, p[1] + dy, sq, sq);
         }
         g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchor)));
         // A lighter inner border on the outer squares; the centre is a light frame instead.
         g.newPath();
-        for (k in at) if (U.has(at, k) && k !== "c") g.rectPath(at[k][0] + 1.5, at[k][1] + 1.5, sq - 3, sq - 3);
-        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
+        for (i = 0; i < keys.length; i++) if (keys[i] !== "c") {
+          edges = true;
+          g.rectPath(at[keys[i]][0] + dx + 1.5, at[keys[i]][1] + dy + 1.5, sq - 3, sq - 3);
+        }
+        if (edges) g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
         // The point used last.
-        p = at[w.values.point];
+        p = U.indexOf(keys, w.values.point) >= 0 ? at[w.values.point] : null;
         if (p) {
           g.newPath();
-          g.rectPath(p[0] + 1, p[1] + 1, sq - 2, sq - 2);
+          g.rectPath(p[0] + dx + 1, p[1] + dy + 1, sq - 2, sq - 2);
           g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(w.style.fg), 2));
         }
-      };
+      }
+      if (!hover) w.paint = function (g) { squares(g, KEYS, 0, 0); };
       for (var i = 0; i < 9; i++) {
         (function (k, x, y) {
+          var e = hover ? hg : 0;
           at[k] = [x, y];
-          w.squares[k] = w.part(k, [x, y, sq, sq], {
+          w.squares[k] = w.part(k, [x - e, y - e, sq + 2 * e, sq + 2 * e], {
             tip: "Anchor to the " + LABEL[k] + ": moves the anchor point of the selected layers or shape groups there without moving them. Shift-click: options (Include masks)",
             click: function () {
               w.save({ point: k });
               w.run({ point: k });
-            }
+            },
+            draw: hover ? function (g) {
+              MK.ui.gfx.hoverBox(g, sq + 2 * e, sq + 2 * e, 0, w.look.bg, null, hover);
+              squares(g, [k], e - x, e - y);
+            } : null
           });
         })(KEYS[i], x0 + (i % 3) * (sq + gap), y0 + Math.floor(i / 3) * (sq + gap));
       }

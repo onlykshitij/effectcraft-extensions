@@ -27,7 +27,7 @@ MK.layout = (function () {
   function defaultStyle(p) {
     return {
       cellSize: 56, spacing: 10, columns: 4, panelBg: "#0D1B21", cellBg: "#0D1B21", cellBorder: "#2A3B42",
-      buttonMode: "icon", hideTitle: false, fg: "#FFFFFF", accent: "#F27A7A", radius: 6, showCommandBox: p === 0
+      buttonMode: "icon", hideTitle: false, fg: "#FFFFFF", accent: "#F27A7A", radius: 6, hover: 40, showCommandBox: p === 0
     };
   }
   // Motion Kit 0.1 (four panels) saved every style key; the values it used as defaults become
@@ -47,6 +47,8 @@ MK.layout = (function () {
     fg: function (v) { return U.normHex(v) || undefined; },
     accent: function (v) { return U.normHex(v) || undefined; },
     radius: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 16) : undefined; },
+    // Hover highlight strength in %: 0 is off, 100 the plain native button.
+    hover: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 100) : undefined; },
     showCommandBox: function (v) { return typeof v === "boolean" ? v : undefined; }
   };
 

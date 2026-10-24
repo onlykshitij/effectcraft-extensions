@@ -109,12 +109,12 @@
       w.copy = w.part("copy", [x0, y0, b, b], {
         tip: "Copy keys: the selected keyframes of the selected properties, with their values, eases, interpolation, spatial tangents and timing",
         click: function () { w.run({ action: "copy" }); },
-        draw: function (g) { MK.ui.gfx.button(g, b, b, r, COPY, w.style.fg, w.style.accent); }
+        draw: function (g) { MK.ui.gfx.button(g, b, b, r, COPY, w); }
       });
       w.paste = w.part("paste", [x0 + b + gap, y0, b, b], {
         tip: "Paste keys at the playhead onto the selected properties, in order. Shift-click: paste only the easing onto the selected keyframes",
         click: function (e) { w.run({ action: e.shift ? "pasteEase" : "paste" }); },
-        draw: function (g) { MK.ui.gfx.button(g, b, b, r, PASTE, w.style.fg, w.style.accent); }
+        draw: function (g) { MK.ui.gfx.button(g, b, b, r, PASTE, w); }
       });
     }
   });

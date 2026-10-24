@@ -188,6 +188,33 @@ var points = 0;
   for (var i = 0; i < (x.children || []).length; i++) walk(x.children[i]);
 })(W5);
 T.check(points > 300 && points < 1500, "the combined panel draws " + points + " path points (under 1,500)");
+// The hover highlight: header buttons, tool buttons, widget buttons and anchor squares draw
+// EffectCraft's native button, which lightens under the pointer without an event; sliders don't.
+function native(x) {
+  for (var i = 0; i < (x.__draw || []).length; i++) if (x.__draw[i].op === "os") return true;
+  return false;
+}
+function hovering() {
+  var ws = P5.widgets, list = [P5.pencil, P5.gear, P5.cells[5], ws[1].copy, ws[1].paste], k;
+  for (k in ws[2].buttons) list.push(ws[2].buttons[k]);
+  for (k in ws[3].squares) list.push(ws[3].squares[k]);
+  for (k in ws[4].buttons) list.push(ws[4].buttons[k]);
+  return [U.filter(list, native).length, list.length];
+}
+var hv = hovering();
+T.check(hv[0] === hv[1] && hv[1] === 20 && !native(P5.widgets[0].sliders.easeIn.part), "the hover highlight is on every button and anchor square, not on the sliders (" + hv.join(" of ") + ")");
+P5.setEditing(true);
+__uiSnapshot();
+hv = hovering();
+T.check(hv[0] === 2, "edit mode: only the header buttons keep it (" + hv.join(" of ") + ")");
+P5.setEditing(false);
+L.save(L.setStyle(L.get(), 4, { hover: 0 }));
+MotionKit.__tick(P5.key);
+__uiSnapshot();
+hv = hovering();
+T.check(hv[0] === 0, "hover 0 turns it off everywhere (" + hv.join(" of ") + ")");
+L.resetAll();
+MotionKit.__tick(P5.key);
 // Settings saved elsewhere are picked up on the next press, without waiting for the poll.
 T.check(UI.POLL_MS === 3000, "panels poll the settings every 3 s");
 L.save(L.moveItem(L.get(), 4, 5, 4, 7));

@@ -20,14 +20,14 @@ var ALL = "ease,keyCopyPaste,interpolation,anchor,sequencerWidget,bounce,elastic
 T.check(d.panels[4].title === "Motion Kit" && ids(d, 4) === ALL, "panel 5 Motion Kit: the widgets, then every tool in category order without easeCopy and moveAnchor");
 var s0 = d.panels[0].style, s1 = d.panels[1].style;
 T.check(s0.cellSize === 56 && s0.spacing === 10 && s0.panelBg === "#0D1B21" && s0.cellBg === "#0D1B21" && s0.cellBorder === "#2A3B42" &&
-  s0.buttonMode === "icon" && s0.hideTitle === false && s0.fg === "#FFFFFF" && s0.accent === "#F27A7A" && s0.radius === 6 && s0.columns === 4, "default style values (the dark theme, icon only)");
+  s0.buttonMode === "icon" && s0.hideTitle === false && s0.fg === "#FFFFFF" && s0.accent === "#F27A7A" && s0.radius === 6 && s0.hover === 40 && s0.columns === 4, "default style values (the dark theme, icon only)");
 T.check(JSON.stringify(d.panels[4].style) === JSON.stringify(s1), "every panel but the first has the same default style");
 T.check(s0.showCommandBox === true && s1.showCommandBox === false, "command box on panel 1 only");
 
 // ---- normalize: every value validated, unknown ids kept
 var bad = {
   panels: [
-    { title: "  ", style: { cellSize: 500, spacing: -3, columns: 99, panelBg: "#abc", cellBg: "nope", cellBorder: "#00ff00", buttonMode: "huge", hideTitle: "yes", fg: 12, accent: "red", radius: 40, showCommandBox: 0 },
+    { title: "  ", style: { cellSize: 500, spacing: -3, columns: 99, panelBg: "#abc", cellBg: "nope", cellBorder: "#00ff00", buttonMode: "huge", hideTitle: "yes", fg: 12, accent: "red", radius: 40, hover: 250, showCommandBox: 0 },
       items: ["bounce", { id: "futureTool", name: "Future", showIcon: false, bg: "#zzzzzz", accent: "#112233" }, { id: "" }, null, 5, "bounce"] },
     "junk"
   ]
@@ -35,7 +35,7 @@ var bad = {
 var n = L.normalize(bad);
 var ns = n.panels[0].style;
 T.check(n.panels.length === 5 && n.panels[0].title === "Panel 1" && n.panels[1].title === "Panel 2" && ids(n, 4) === "", "missing and blank panels get defaults (empty)");
-T.check(ns.cellSize === 96 && ns.spacing === 0 && ns.columns === 12 && ns.radius === 16, "numbers clamped (cellSize 96, spacing 0, columns 12, radius 16)");
+T.check(ns.cellSize === 96 && ns.spacing === 0 && ns.columns === 12 && ns.radius === 16 && ns.hover === 100, "numbers clamped (cellSize 96, spacing 0, columns 12, radius 16, hover 100)");
 T.check(ns.panelBg === "#AABBCC" && ns.cellBg === "#0D1B21" && ns.cellBorder === "#00FF00" && ns.fg === "#FFFFFF" && ns.accent === "#F27A7A", "colours normalised or defaulted");
 T.check(ns.buttonMode === "icon" && ns.hideTitle === false && ns.showCommandBox === true, "bad enums and booleans defaulted");
 T.check(ids(n, 0) === "bounce,futureTool", "bad items dropped, duplicates removed, unknown id kept");

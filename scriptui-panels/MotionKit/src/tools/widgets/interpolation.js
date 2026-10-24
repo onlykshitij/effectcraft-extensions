@@ -52,7 +52,7 @@
           w.buttons[k] = w.part(k, [x, y0, b, b], {
             tip: TYPES[k].tip,
             click: function () { w.run({ type: k }); },
-            draw: function (g) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w.style.fg, w.style.accent); }
+            draw: function (g) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w); }
           });
         })(ORDER[i], x0 + i * (b + gap));
       }

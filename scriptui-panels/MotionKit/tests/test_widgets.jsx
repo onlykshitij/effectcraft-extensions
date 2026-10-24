@@ -156,12 +156,16 @@ click(an.squares.tl);
 T.check(T.near(D.transform.anchorPoint.value, [0, 0]) && T.near(corners()[0], before[0]) && T.near(corners()[1], before[1]), "a square moves the anchor to that point without moving the layer");
 T.check(MotionKit.options.get("anchor").point === "tl", "the square used last is remembered");
 __uiSnapshot();
-var aw = W("anchor"), hi = aw.cell.__draw, tl = aw.squares.tl, lit = false;
-for (var h = 0; h < hi.length; h++) {
-  var seg = hi[h].path && hi[h].path[0];
-  if (hi[h].op === "stroke" && hi[h].width === 2 && seg && seg.k === "R" && seg.x === tl.bounds[0] + 1 && seg.y === tl.bounds[1] + 1) lit = true;
+// With the hover highlight (the default) each square is painted on its own part.
+var aw = W("anchor"), lit = [];
+for (var sk in aw.squares) {
+  var hi = aw.squares[sk].__draw || [];
+  for (var h = 0; h < hi.length; h++) {
+    var seg = hi[h].path && hi[h].path[0];
+    if (hi[h].op === "stroke" && hi[h].width === 2 && seg && seg.k === "R") lit.push(sk);
+  }
 }
-T.check(lit, "and highlighted (an outline on its square)");
+T.check(lit.join() === "tl", "and highlighted (an outline on its square: " + lit.join() + ")");
 click(W("anchor").squares.br, { shiftKey: true });
 T.check(opened.pop() === "moveAnchor" && T.near(D.transform.anchorPoint.value, [0, 0]), "Shift-click opens Move Anchor Point's options and moves nothing");
 

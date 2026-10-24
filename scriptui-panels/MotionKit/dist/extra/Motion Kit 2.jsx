@@ -225,7 +225,7 @@ MK.layout = (function () {
   function defaultStyle(p) {
     return {
       cellSize: 56, spacing: 10, columns: 4, panelBg: "#0D1B21", cellBg: "#0D1B21", cellBorder: "#2A3B42",
-      buttonMode: "icon", hideTitle: false, fg: "#FFFFFF", accent: "#F27A7A", radius: 6, showCommandBox: p === 0
+      buttonMode: "icon", hideTitle: false, fg: "#FFFFFF", accent: "#F27A7A", radius: 6, hover: 40, showCommandBox: p === 0
     };
   }
   // Motion Kit 0.1 (four panels) saved every style key; the values it used as defaults become
@@ -245,6 +245,8 @@ MK.layout = (function () {
     fg: function (v) { return U.normHex(v) || undefined; },
     accent: function (v) { return U.normHex(v) || undefined; },
     radius: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 16) : undefined; },
+    // Hover highlight strength in %: 0 is off, 100 the plain native button.
+    hover: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 100) : undefined; },
     showCommandBox: function (v) { return typeof v === "boolean" ? v : undefined; }
   };
 
@@ -2162,11 +2164,13 @@ MK.optionsDialog = (function () {
 // 1 x 1, widgets declare their span. Each panel polls the settings `rev` and rebuilds when
 // another panel (or the dialog) saved something.
 //
-// Every cell, and every interactive part of a widget, is an `iconbutton` with onDraw and no
-// drawOSControl: EffectCraft shows the help tip of a custom-drawn control that isn't a
-// container (scriptui_view.rs draw_widget), but not of a custom-drawn group. Input comes only
-// through the grid's mouse listeners (mousedown / mouseup bubble up from the cell under the
-// pointer), never onClick, so a click runs once. Every grid control carries its grid position
+// Every cell, and every interactive part of a widget, is an `iconbutton` with onDraw:
+// EffectCraft shows the help tip of a custom-drawn control that isn't a container
+// (scriptui_view.rs draw_widget), but not of a custom-drawn group. Buttons with the hover
+// highlight (the style's `hover`) also call drawOSControl, so EffectCraft draws its native
+// button under the paint and lightens it under the pointer without telling the script. Input
+// comes only through the grid's mouse listeners (mousedown / mouseup bubble up from the cell
+// under the pointer), never onClick, so a click runs once. Every grid control carries its grid position
 // (mkGX, mkGY), which turns an event's clientX / clientY into grid coordinates.
 //
 // Speed: EffectCraft re-runs every onDraw, lays the window out and serialises it after each
@@ -2372,6 +2376,53 @@ MK.ui.gfx = (function () {
     }
   };
   X.box = function (g, x, y, w, h, r, fill, border, alpha) { X.boxes(g, [[x, y, w, h]], r, fill, border, alpha); };
+  // The four corners outside a w x h box rounded with radius r, as one path (cached).
+  function corners(g, w, h, r) {
+    var k = Math.min(r, w / 2, h / 2), key = "c" + w + "x" + h + ":" + k;
+    if (!U.has(boxes, key)) {
+      var A = MK.icons.geom.arc, c = [[0, 0, k, k, 180], [w, 0, w - k, k, -90], [w, h, w - k, h - k, 0], [0, h, k, h - k, 90]];
+      g.newPath();
+      for (var i = 0; i < 4; i++) {
+        var pts = A(c[i][2], c[i][3], k, k, c[i][4], c[i][4] + 90, 45);
+        g.moveTo(c[i][0], c[i][1]);
+        for (var j = 0; j < pts.length; j++) g.lineTo(r1(pts[j][0]), r1(pts[j][1]));
+        g.closePath();
+      }
+      boxes[key] = g.currentPath;
+    }
+    return boxes[key];
+  }
+  // EffectCraft's native button fill at rest (egui's inactive fill in its dark theme).
+  // shortcut: assumes the dark theme; read the theme's fill if EffectCraft gets a light one.
+  var NATIVE = 23 / 255, under = {};
+  // The brush that, at `alpha` over the native rest fill, comes out as `hex`. Channels brighter
+  // than 23 + alpha * 232 can't be reached and come out darker.
+  function underlay(g, hex, alpha) {
+    var key = hex + "/" + alpha;
+    if (!U.has(under, key)) under[key] = U.rgbToHex(U.map(U.hexToRgb(hex) || [0, 0, 0], function (v) { return (v - NATIVE * (1 - alpha)) / alpha; }));
+    return g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(under[key], alpha));
+  }
+  // Hover highlight: EffectCraft's native button, which lightens under the pointer by itself
+  // (no script event, no redraw), covered at 1 - hover % by a w x h box that rests at `fill`,
+  // rounded with radius r when the corners are `outer` (left native when null). The corners
+  // and the 1 px edge (`border`, rounded, when given) are opaque: they hide the native
+  // button's outline. Draws nothing and returns false when hover is 0 or there is no fill.
+  X.hoverBox = function (g, w, h, r, fill, outer, hover, border) {
+    if (!(hover > 0) || !fill) return false;
+    g.drawOSControl();
+    var a = 1 - hover / 100, round = r > 0 && outer !== fill;
+    if (round && outer) g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(outer)), corners(g, w, h, r));
+    if (a > 0) g.fillPath(underlay(g, fill, a), round ? boxPath(g, [[0, 0, w, h]], r) : rect(g, 0, w, h));
+    if (border || round) X.box(g, 0, 0, w, h, r, null, border || fill);
+    else g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(fill), 1), rect(g, 0.5, w - 1, h - 1));
+    return true;
+  };
+  // A one-segment rectangle path at (o, o).
+  function rect(g, o, w, h) {
+    g.newPath();
+    g.rectPath(o, o, w, h);
+    return g.currentPath;
+  }
   X.circle = function (g, cx, cy, r, fill) {
     g.newPath();
     g.ellipsePath(cx - r, cy - r, 2 * r, 2 * r);
@@ -2397,11 +2448,12 @@ MK.ui.gfx = (function () {
     }
     g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(hex, 0.5), 1));
   };
-  // An inner widget button: a filled rounded rectangle with a 24-grid icon at 70 % of its side.
-  X.button = function (g, w, h, r, icon, fg, accent) {
-    X.box(g, 0, 0, w, h, r, MK.THEME.button);
+  // An inner button of widget `wd`: a filled rounded rectangle (with the hover highlight out
+  // of edit mode) with a 24-grid icon at 70 % of its side.
+  X.button = function (g, w, h, r, icon, wd) {
+    if (!X.hoverBox(g, w, h, r, MK.THEME.button, wd.look.bg, wd.editing ? 0 : wd.style.hover)) X.box(g, 0, 0, w, h, r, MK.THEME.button);
     var s = Math.round(Math.min(w, h) * 0.7);
-    MK.icons.draw(g, icon, Math.round((w - s) / 2), Math.round((h - s) / 2), s, fg, accent);
+    MK.icons.draw(g, icon, Math.round((w - s) / 2), Math.round((h - s) / 2), s, wd.style.fg, wd.style.accent);
   };
   // The 2 px drop indicator: a white bar at x, from y, h tall.
   X.dropMark = function (g, x, y, h) {
@@ -2414,11 +2466,11 @@ MK.ui.gfx = (function () {
 
 // Paints the frames of the cells at `rects`: backgrounds that differ from the panel's (bgs[i],
 // one operation per colour), then every border in one operation. Cell `dim` (being dragged)
-// gets a faint border instead.
+// gets a faint border instead; cells whose bgs[i] is null frame themselves.
 MK.ui.frames = function (g, rects, bgs, style, dim) {
   var G = MK.ui.gfx, byBg = {}, order = [], plain = [];
   for (var i = 0; i < rects.length; i++) {
-    if (i === dim) continue;
+    if (i === dim || bgs[i] === null) continue;
     plain.push(rects[i]);
     if (bgs[i] === style.panelBg) continue;
     if (!MK.util.has(byBg, bgs[i])) {
@@ -2434,10 +2486,12 @@ MK.ui.frames = function (g, rects, bgs, style, dim) {
   }
 };
 
-// Paints one button's content: icon and / or name, and the dot. The grid paints the frames.
-// o: {w, h, compact, look, style}.
+// Paints one button's content: icon and / or name, and the dot. With o.hover (the hover
+// highlight strength) the button draws its own frame; otherwise the grid paints it.
+// o: {w, h, compact, look, style, hover}.
 MK.ui.paintCell = function (g, o) {
   var U = MK.util, L = o.look, w = o.w, h = o.h, s = o.style.cellSize;
+  MK.ui.gfx.hoverBox(g, w, h, o.style.radius, L.bg, o.style.panelBg, o.hover, o.style.cellBorder);
   var font = null, lineH = 0, pen = null;
   if (L.showName) {
     font = ScriptUI.newFont("dialog", "REGULAR", U.clamp(Math.round(s * 0.24), 9, 12));
@@ -2656,11 +2710,17 @@ MK.ui.buildPanel = function (host, index, views) {
     var y = Math.round((H - B) / 2);
     P.pencil = hdr.add("iconbutton", [width - 2 * B - GAP, y, width - B - GAP, y + B]);
     P.pencil.helpTip = P.editing ? "Done: leave edit mode" : "Edit this panel: drag to reorder, ✕ removes, + adds";
-    P.pencil.onDraw = function () { MK.ui.paintGlyph(this.graphics, B, B, MK.icons.builtin.pencil, P.editing ? style.accent : style.fg); };
+    P.pencil.onDraw = function () {
+      G.hoverBox(this.graphics, B, B, 0, style.panelBg, null, style.hover);
+      MK.ui.paintGlyph(this.graphics, B, B, MK.icons.builtin.pencil, P.editing ? style.accent : style.fg);
+    };
     P.pencil.onClick = function () { P.setEditing(!P.editing); };
     P.gear = hdr.add("iconbutton", [width - B, y, width, y + B]);
     P.gear.helpTip = "Layout & Style… (move buttons between panels, colours, layouts, library)";
-    P.gear.onDraw = function () { MK.ui.paintGlyph(this.graphics, B, B, MK.icons.builtin.gear, style.fg); };
+    P.gear.onDraw = function () {
+      G.hoverBox(this.graphics, B, B, 0, style.panelBg, null, style.hover);
+      MK.ui.paintGlyph(this.graphics, B, B, MK.icons.builtin.gear, style.fg);
+    };
     P.gear.onClick = function () {
       MK.ui.openLayoutDialog(P.index);
       P.refresh();
@@ -2695,8 +2755,10 @@ MK.ui.buildPanel = function (host, index, views) {
     };
     for (var i = 0; i < n; i++) {
       var r = geo.rects[i], look = MK.ui.look(items[i], style, P.state.library), cell;
-      bgs.push(look.bg);
-      if (look.tool && look.tool.kind === "widget") cell = widgetCell(g, i, r, look, style);
+      var widget = look.tool && look.tool.kind === "widget";
+      // Tool buttons with the hover highlight draw their own frame (over the native button).
+      bgs.push(widget || P.editing || !style.hover ? look.bg : null);
+      if (widget) cell = widgetCell(g, i, r, look, style);
       else {
         cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
         cell.helpTip = look.name + " – " + look.description +
@@ -2767,7 +2829,8 @@ MK.ui.buildPanel = function (host, index, views) {
 
   function paint() {
     var r = P.geo.rects[this.mkIndex];
-    MK.ui.paintCell(this.graphics, { w: r[2], h: r[3], compact: P.sz.compact, style: P.layout().panels[P.index].style, look: this.mkLook });
+    var style = P.layout().panels[P.index].style;
+    MK.ui.paintCell(this.graphics, { w: r[2], h: r[3], compact: P.sz.compact, style: style, look: this.mkLook, hover: P.editing ? 0 : style.hover });
   }
 
   // A widget's cell: a group holding the widget's parts, over the frame the grid paints. A
@@ -3373,6 +3436,8 @@ MK.layoutDialog = (function () {
     D.styleFg = color("Icon and text", "fg", false);
     D.styleAccent = color("Accent", "accent", false);
     D.styleRadius = number("Corner radius", "radius", 0, 16);
+    D.styleHover = number("Hover highlight", "hover", 0, 100, "% ");
+    D.styleHover.helpTip = "How much a button lightens under the pointer. 0 turns it off; 100 is EffectCraft's plain button.";
     var r1 = W.row(tab);
     W.label(r1, "Buttons show", 110);
     D.styleMode = r1.add("dropdownlist", undefined, ["Icon", "Name", "Icon and name"]);
@@ -3660,6 +3725,7 @@ MK.layoutDialog = (function () {
       D.styleFg.set(s.fg);
       D.styleAccent.set(s.accent);
       D.styleRadius.text = String(s.radius);
+      D.styleHover.text = String(s.hover);
       D.styleMode.selection = U.indexOf(MK.layout.MODES, s.buttonMode);
       D.styleHide.value = s.hideTitle;
       D.styleCmd.value = s.showCommandBox;
@@ -6635,44 +6701,59 @@ MK.layoutDialog = (function () {
       var gap = Math.max(3, Math.round(w.w * 0.05)), side = Math.min(w.w, w.h);
       var sq = Math.max(8, Math.floor((side - 2 * Math.round(side * 0.08) - 2 * gap) / 3));
       var x0 = Math.round((w.w - 3 * sq - 2 * gap) / 2), y0 = Math.round((w.h - 3 * sq - 2 * gap) / 2);
-      var at = {}, inset = Math.max(3, Math.round(sq * 0.16));
+      var at = {}, inset = Math.max(3, Math.round(sq * 0.16)), hover = w.editing ? 0 : w.style.hover, hg = Math.floor(gap / 2);
       w.onShift = function () { w.options("moveAnchor"); };
       w.squares = {};
-      // The squares are painted together on the widget (four draw operations, not two per
-      // square); the parts on top are invisible and carry the clicks and help tips.
-      w.paint = function (g) {
-        var c = at.c, k, p;
+      // Paints squares `keys`, shifted by (dx, dy). Without the hover highlight they are painted
+      // together on the widget (four draw operations, not two per square) and the parts on top
+      // are invisible. With it, each part paints its square over the native button, reaching
+      // half the gap around it: the squares are too bright to sit on the native button, so the
+      // highlight is the ring in the gap.
+      function squares(g, keys, dx, dy) {
+        var k, p, i, edges = false;
+        if (U.indexOf(keys, "c") >= 0) {
+          g.newPath();
+          g.rectPath(at.c[0] + dx, at.c[1] + dy, sq, sq);
+          g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchorEdge)));
+        }
         g.newPath();
-        g.rectPath(c[0], c[1], sq, sq);
-        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchorEdge)));
-        g.newPath();
-        for (k in at) if (U.has(at, k)) {
+        for (i = 0; i < keys.length; i++) {
+          k = keys[i];
           p = at[k];
-          if (k === "c") g.rectPath(p[0] + inset, p[1] + inset, sq - 2 * inset, sq - 2 * inset);
-          else g.rectPath(p[0], p[1], sq, sq);
+          if (k === "c") g.rectPath(p[0] + dx + inset, p[1] + dy + inset, sq - 2 * inset, sq - 2 * inset);
+          else g.rectPath(p[0] + dx, p[1] + dy, sq, sq);
         }
         g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchor)));
         // A lighter inner border on the outer squares; the centre is a light frame instead.
         g.newPath();
-        for (k in at) if (U.has(at, k) && k !== "c") g.rectPath(at[k][0] + 1.5, at[k][1] + 1.5, sq - 3, sq - 3);
-        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
+        for (i = 0; i < keys.length; i++) if (keys[i] !== "c") {
+          edges = true;
+          g.rectPath(at[keys[i]][0] + dx + 1.5, at[keys[i]][1] + dy + 1.5, sq - 3, sq - 3);
+        }
+        if (edges) g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
         // The point used last.
-        p = at[w.values.point];
+        p = U.indexOf(keys, w.values.point) >= 0 ? at[w.values.point] : null;
         if (p) {
           g.newPath();
-          g.rectPath(p[0] + 1, p[1] + 1, sq - 2, sq - 2);
+          g.rectPath(p[0] + dx + 1, p[1] + dy + 1, sq - 2, sq - 2);
           g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(w.style.fg), 2));
         }
-      };
+      }
+      if (!hover) w.paint = function (g) { squares(g, KEYS, 0, 0); };
       for (var i = 0; i < 9; i++) {
         (function (k, x, y) {
+          var e = hover ? hg : 0;
           at[k] = [x, y];
-          w.squares[k] = w.part(k, [x, y, sq, sq], {
+          w.squares[k] = w.part(k, [x - e, y - e, sq + 2 * e, sq + 2 * e], {
             tip: "Anchor to the " + LABEL[k] + ": moves the anchor point of the selected layers or shape groups there without moving them. Shift-click: options (Include masks)",
             click: function () {
               w.save({ point: k });
               w.run({ point: k });
-            }
+            },
+            draw: hover ? function (g) {
+              MK.ui.gfx.hoverBox(g, sq + 2 * e, sq + 2 * e, 0, w.look.bg, null, hover);
+              squares(g, [k], e - x, e - y);
+            } : null
           });
         })(KEYS[i], x0 + (i % 3) * (sq + gap), y0 + Math.floor(i / 3) * (sq + gap));
       }
@@ -6833,7 +6914,7 @@ MK.layoutDialog = (function () {
           w.buttons[k] = w.part(k, [x, y0, b, b], {
             tip: TYPES[k].tip,
             click: function () { w.run({ type: k }); },
-            draw: function (g) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w.style.fg, w.style.accent); }
+            draw: function (g) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w); }
           });
         })(ORDER[i], x0 + i * (b + gap));
       }
@@ -6952,12 +7033,12 @@ MK.layoutDialog = (function () {
       w.copy = w.part("copy", [x0, y0, b, b], {
         tip: "Copy keys: the selected keyframes of the selected properties, with their values, eases, interpolation, spatial tangents and timing",
         click: function () { w.run({ action: "copy" }); },
-        draw: function (g) { MK.ui.gfx.button(g, b, b, r, COPY, w.style.fg, w.style.accent); }
+        draw: function (g) { MK.ui.gfx.button(g, b, b, r, COPY, w); }
       });
       w.paste = w.part("paste", [x0 + b + gap, y0, b, b], {
         tip: "Paste keys at the playhead onto the selected properties, in order. Shift-click: paste only the easing onto the selected keyframes",
         click: function (e) { w.run({ action: e.shift ? "pasteEase" : "paste" }); },
-        draw: function (g) { MK.ui.gfx.button(g, b, b, r, PASTE, w.style.fg, w.style.accent); }
+        draw: function (g) { MK.ui.gfx.button(g, b, b, r, PASTE, w); }
       });
     }
   });
@@ -7037,7 +7118,7 @@ MK.layoutDialog = (function () {
           w.buttons[o[0]] = w.part(o[0], [x, by, bw, btnH], {
             tip: o[1] + ": item k moves Amount x floor(k / Step) frames. Shift-click: all sequencer options",
             click: function () { w.run({ order: o[0] }); },
-            draw: function (g) { MK.ui.gfx.button(g, bw, btnH, r, o[2], w.style.fg, w.style.accent); }
+            draw: function (g) { MK.ui.gfx.button(g, bw, btnH, r, o[2], w); }
           });
         })(ORDERS[i], pad + i * (bw + gap));
       }

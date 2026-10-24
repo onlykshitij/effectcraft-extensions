@@ -102,6 +102,7 @@ The ⚙ button opens Layout & Style, which has five tabs:
 - **Style:** per panel:
   - cell size, spacing and columns;
   - panel, button and border colours, the icon and text colour, the accent colour and the corner radius;
+  - the hover highlight: how much a button lightens under the pointer, from 0 (off) to 100 %, 40 % by default;
   - whether buttons show the icon (the default), the name, or both;
   - whether the title row and the command box are shown.
 - **Button:** a button's own name, visibility and colours.
@@ -118,7 +119,8 @@ Layouts saved by Motion Kit 0.1 had four panels. They load with the Motion Kit p
 - **Help tips need custom-drawn buttons.** EffectCraft shows a help tip for a custom-drawn control but not for a custom-drawn group, so every button and every widget control is a drawn `iconbutton`.
 - **Bold is drawn twice.** EffectCraft draws every script font as regular, so the panel title is drawn twice, 0.6 px apart.
 - **No join style.** ScriptUI pens have no round joins, so icons draw a dot on every corner.
-- **Every event redraws the panel.** EffectCraft re-runs a script panel's drawing, lays it out and serialises it after every event the script receives. So Motion Kit listens to pointer movement only during a drag, has no hover highlight (help tips show what's under the pointer), and checks for changes made in other panels every 3 seconds and on every click.
+- **Every event redraws the panel.** EffectCraft re-runs a script panel's drawing, lays it out and serialises it after every event the script receives. So Motion Kit listens to pointer movement only during a drag, and checks for changes made in other panels every 3 seconds and on every click.
+- **The hover highlight is EffectCraft's own button.** A highlight drawn by the script would cost a full redraw each time the pointer crosses a button. Instead, each button draws EffectCraft's native button underneath and covers it with its own colour (60 % opaque at the default strength), so EffectCraft lightens it under the pointer without telling the script. It adds about 5 ms to each redraw of the Motion Kit panel (19 to 24 ms). The anchor squares are too bright to cover that way, so their highlight is a ring around the square. The sliders have none, and edit mode turns it off for the cells.
 - **Colours are pre-corrected.** EffectCraft 0.16 and earlier draw script colours too bright ([storytold/effectcraft#2272](https://github.com/storytold/effectcraft/pull/2272)), so Motion Kit corrects them when it runs in EffectCraft.
 - **Deep duplicate needs EffectCraft 0.16 or later.** Duplicate Comp's Deep option needs `replaceSource`. On older versions it makes a plain duplicate and says so.
 - **Some tools overwrite the clipboard.** Unprecomp and Merge Shapes copy through EffectCraft's clipboard.

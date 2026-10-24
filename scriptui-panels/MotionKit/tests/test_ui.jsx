@@ -28,8 +28,10 @@ var P1 = wins[0].mkPanel, P2 = wins[1].mkPanel;
 T.check(P1.title.text === "Animate" && P1.layoutList && P1.pencil && P1.gear && P1.commandBox, "panel 1 header: title, layout list, ✎, ⚙, command box");
 T.check(!P2.commandBox, "panel 2 has no command box by default");
 
-// Every button draws its icon and no name: the name is in the help tip. The grid draws every
-// cell's frame under the cells, in one operation (onDraw runs when the host takes a snapshot).
+// Every button draws its icon and no name: the name is in the help tip. With the hover
+// highlight (the default) each button draws EffectCraft's native button, then its own frame;
+// with hover 0 the grid draws every cell's frame under the cells, in one operation (onDraw runs
+// when the host takes a snapshot).
 __uiSnapshot();
 // The grid's border operation: true when it has one outline starting inside each cell.
 function framed(P) {
@@ -45,10 +47,22 @@ function framed(P) {
   }
   return false;
 }
-var drawn = true, texts = false, iconButtons = true, frames = true;
+// True when the cells of panels 1-4 all draw the native button and their own frame (own) or none
+// of them does (!own).
+function cellFrames(own) {
+  for (var q = 0; q < 4; q++) {
+    var cells = wins[q].mkPanel.cells;
+    if (framed(wins[q].mkPanel) === own) return false;
+    for (var c = 0; c < cells.length; c++) {
+      var ops = cells[c].__draw || [], self = ops.length > 2 && ops[0].op === "os" && ops[1].op === "fill" && ops[2].op === "stroke";
+      if (self !== own) return false;
+    }
+  }
+  return true;
+}
+var drawn = true, texts = false, iconButtons = true;
 for (var q = 0; q < 4; q++) {
   var cells = wins[q].mkPanel.cells;
-  if (!framed(wins[q].mkPanel)) frames = false;
   for (var c = 0; c < cells.length; c++) {
     var ops = cells[c].__draw || [];
     if (!ops.length) drawn = false;
@@ -56,7 +70,17 @@ for (var q = 0; q < 4; q++) {
     for (var o = 0; o < ops.length; o++) if (ops[o].op === "text" && ops[o].text) texts = true;
   }
 }
-T.check(drawn && !texts && frames, "every button draws an icon, without a name, inside the frame the grid draws for it");
+T.check(drawn && !texts && cellFrames(true), "every button draws the native button (the hover highlight), its frame and an icon, without a name");
+for (q = 0; q < 4; q++) {
+  L.save(L.setStyle(L.get(), q, { hover: 0 }));
+  wins[q].mkPanel.rebuild();
+}
+__uiSnapshot();
+T.check(cellFrames(false), "hover 0: no native button; the grid draws every frame");
+for (q = 0; q < 4; q++) {
+  L.save(L.setStyle(L.get(), q, { hover: 40 }));
+  wins[q].mkPanel.rebuild();
+}
 T.check(iconButtons, "every tool button is a custom-drawn iconbutton (so EffectCraft shows its help tip)");
 var look = MotionKit.ui.look({ id: "futureTool" }, def.panels[0].style);
 T.check(look.missing && look.fg === "#8A8A8A" && look.icon === MotionKit.helpers.icons.builtin.missing, "a tool that isn't installed draws as the grey \"?\" button");
@@ -289,7 +313,9 @@ D.styleAccent.edit.text = "#00ccff";
 D.styleAccent.edit.notify("onChange");
 D.styleRadius.text = "12";
 D.styleRadius.notify("onChange");
-T.check(D.pc(0).style.accent === "#00CCFF" && D.pc(0).style.radius === 12, "Style: accent colour and corner radius");
+D.styleHover.text = "0";
+D.styleHover.notify("onChange");
+T.check(D.pc(0).style.accent === "#00CCFF" && D.pc(0).style.radius === 12 && D.pc(0).style.hover === 0, "Style: accent colour, corner radius and hover highlight");
 
 // Button tab.
 T.mouse(D.win, D.lists[0], "mousedown", 20, 5);
