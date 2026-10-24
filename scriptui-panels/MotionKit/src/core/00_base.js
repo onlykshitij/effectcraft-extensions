@@ -81,7 +81,8 @@ MK.util = (function () {
   // EffectCraft paints ScriptUI pen and brush colours as linear light (egui::Rgba in
   // scriptui_view.rs), which brightens them; sending each channel's linear value cancels that.
   // shortcut: applies to every EffectCraft version; gate it on app.version once EffectCraft fixes it.
-  U.LINEAR_UI = typeof BridgeTalk !== "undefined" && BridgeTalk.appName === "effectcraft";
+  U.EFFECTCRAFT = typeof BridgeTalk !== "undefined" && BridgeTalk.appName === "effectcraft";
+  U.LINEAR_UI = U.EFFECTCRAFT;
   function toLinear(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
   // [r, g, b, a] for ScriptUI pens and brushes.
   U.rgba = function (hex, alpha) {

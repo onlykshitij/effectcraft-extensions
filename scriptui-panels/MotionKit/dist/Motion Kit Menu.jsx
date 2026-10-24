@@ -89,7 +89,8 @@ MK.util = (function () {
   // EffectCraft paints ScriptUI pen and brush colours as linear light (egui::Rgba in
   // scriptui_view.rs), which brightens them; sending each channel's linear value cancels that.
   // shortcut: applies to every EffectCraft version; gate it on app.version once EffectCraft fixes it.
-  U.LINEAR_UI = typeof BridgeTalk !== "undefined" && BridgeTalk.appName === "effectcraft";
+  U.EFFECTCRAFT = typeof BridgeTalk !== "undefined" && BridgeTalk.appName === "effectcraft";
+  U.LINEAR_UI = U.EFFECTCRAFT;
   function toLinear(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
   // [r, g, b, a] for ScriptUI pens and brushes.
   U.rgba = function (hex, alpha) {
@@ -2463,7 +2464,9 @@ MK.layoutDialog = (function () {
     tb.button = tabs.add("tab", undefined, "Button");
     tb.layouts = tabs.add("tab", undefined, "Layouts");
     tb.library = tabs.add("tab", undefined, "Library");
-    for (var k in tb) if (U.has(tb, k)) { tb[k].orientation = "column"; tb[k].alignChildren = ["fill", "top"]; tb[k].spacing = 8; }
+    // EffectCraft draws the 22 px tab strip over the top of the tab's content; leave room for it.
+    var tabMargins = U.EFFECTCRAFT ? [10, 34, 10, 10] : 10;
+    for (var k in tb) if (U.has(tb, k)) { tb[k].orientation = "column"; tb[k].alignChildren = ["fill", "top"]; tb[k].spacing = 8; tb[k].margins = tabMargins; }
     D.tab = tb;
 
     buttonsTab(D, tb.buttons);
@@ -2654,12 +2657,12 @@ MK.layoutDialog = (function () {
       D.sync();
     };
     function style(key, v) { D.edit(function (l) { var s = {}; s[key] = v; return MK.layout.setStyle(l, D.panel, s); }); }
-    function number(label, key, lo, hi) {
+    function number(label, key, lo, hi, unit) {
       var r = W.row(tab);
       W.label(r, label, 110);
       var et = r.add("edittext", undefined, "");
       et.characters = 5;
-      W.label(r, "px (" + lo + "–" + hi + ")").enabled = false;
+      W.label(r, (unit === undefined ? "px " : unit) + "(" + lo + "–" + hi + ")").enabled = false;
       et.onChange = function () {
         if (D.syncing) return;
         var n = Number(U.trim(et.text));
@@ -2681,7 +2684,7 @@ MK.layoutDialog = (function () {
     }
     D.styleCell = number("Cell size", "cellSize", 24, 96);
     D.styleSpacing = number("Spacing", "spacing", 0, 32);
-    D.styleCols = number("Columns", "columns", 1, 12);
+    D.styleCols = number("Columns", "columns", 1, 12, "");
     D.stylePanelBg = color("Panel background", "panelBg", true, "empty: theme colour");
     D.styleCellBg = color("Button colour", "cellBg", false);
     D.styleBorder = color("Button border", "cellBorder", true, "empty: none");
