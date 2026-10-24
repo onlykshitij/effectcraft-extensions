@@ -2,7 +2,7 @@
 
 24 motion design tools and 5 inline widgets for EffectCraft, in one dockable panel. Its view list switches between the combined view (every widget and tool), one category at a time, and a compact menu. You can rearrange and restyle every view.
 
-<img src="preview.png" alt="The combined Motion Kit panel: ease sliders, key copy and paste, interpolation buttons, anchor grid, sequencer and icon-only tool buttons on a dark blue-green background" width="290"> <img src="preview-edit.png" alt="The same panel in edit mode, with dashed outlines and a remove button on every cell" width="280"> <img src="preview-rig.png" alt="Motion Kit 2, the Rig panel, sized to its six buttons" width="290">
+<img src="preview-combined.png" alt="The Motion Kit panel in its combined view: the ease sliders, Key Copy/Paste, Interpolation, Anchor and Sequencer widgets, then icon-only tool buttons on a dark blue-green background" width="274"> <img src="preview-edit.png" alt="The same panel in edit mode: dashed outlines, a remove button on every cell, and a + cell at the end" width="274">
 
 ## Install
 
@@ -11,6 +11,8 @@ In EffectCraft, use File ▸ Scripts ▸ Install ScriptUI Panel… for `dist/Mot
 - **Combined:** the widgets, then every tool;
 - **Animate**, **Rig**, **Shapes**, **Comp:** one category each (named after the layout's panels 1–4);
 - **Menu:** every tool from two dropdowns.
+
+<img src="preview-animate.png" alt="The Animate view: the command box and the eight Animate tools" width="274"> <img src="preview-rig.png" alt="The Rig view: six Rig tools" width="274"> <img src="preview-shapes.png" alt="The Shapes view: six Shapes tools" width="274"> <img src="preview-comp.png" alt="The Comp view: four Comp tools" width="274"> <img src="preview-menu.png" alt="The Menu view: a category list and a tool list, Run, Options and Layout & Style buttons, and the command box" width="294">
 
 To dock several views at once, also install the optional single panels in `dist/extra/`: `Motion Kit 1.jsx` to `Motion Kit 4.jsx` and `Motion Kit Menu.jsx`. Each adds its own Window menu entry. Once EffectCraft supports submenus in the Window menu, put them in a "Motion Kit" subfolder of the ScriptUI Panels folder; until then, install them at the top level like `Motion Kit.jsx`.
 
