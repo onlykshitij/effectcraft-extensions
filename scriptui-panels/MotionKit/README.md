@@ -1,13 +1,14 @@
 # Motion Kit
 
-24 motion design tools for EffectCraft, in four dockable ScriptUI panels you can rearrange and restyle, plus a compact menu panel.
+24 motion design tools and 5 inline widgets for EffectCraft. The Motion Kit panel holds all of them; four smaller panels hold one category each, and a compact menu panel lists every tool. You can rearrange and restyle every panel.
 
-<img src="preview.png" alt="The four Motion Kit panels docked in EffectCraft: Comp, Shapes, Rig and Animate tools with duotone icons" width="300"> <img src="preview-layout.png" alt="The Layout & Style dialog with the four panels' buttons in columns" width="480">
+<img src="preview.png" alt="The combined Motion Kit panel: ease sliders, key copy and paste, interpolation buttons, anchor grid, sequencer and icon-only tool buttons on a dark blue-green background" width="290"> <img src="preview-edit.png" alt="The same panel in edit mode, with dashed outlines and a remove button on every cell" width="280"> <img src="preview-rig.png" alt="Motion Kit 2, the Rig panel, sized to its six buttons" width="290">
 
 ## Install
 
 In EffectCraft, use File ▸ Scripts ▸ Install ScriptUI Panel… for each of these files in `dist/`:
 
+- `Motion Kit.jsx` (everything: the widgets, then every tool)
 - `Motion Kit 1.jsx` (Animate)
 - `Motion Kit 2.jsx` (Rig)
 - `Motion Kit 3.jsx` (Shapes)
@@ -18,16 +19,36 @@ Open them from the bottom of the Window menu. Install only the ones you want. Th
 
 ## Use
 
-- **Run:** click a button to run its tool on the active comp's selection. Each run is one undo step.
+- **Run:** click a button to run its tool on the active comp's selection. Each run is one undo step. Buttons show only their icon; hover for the tool's name and what it does.
 - **Options:** Shift-click (or right-click) a button for its options. Options are remembered, and a plain click uses them.
-- **Rearrange:** drag a button to reorder it within its panel. To move buttons between panels, use the ⚙ button's Layout & Style dialog, because ScriptUI can't drag between windows.
+- **Rearrange:** click the pencil in a panel's header for edit mode. Every cell then gets a dashed outline and a ✕ that removes it, a trailing **+** cell adds tools and widgets the panel doesn't have yet, and dragging a cell reorders it. Click the pencil again when you're done. Out of edit mode, dragging never moves a cell, so a slider drag stays a slider drag. To move buttons between panels, use the ⚙ button's Layout & Style dialog, because ScriptUI can't drag between windows.
+- **Layouts:** the list next to the panel title switches every panel to another named layout.
 - **Command box:** type part of a tool's name in panel 1's command box and press Enter.
 
 Controls a tool adds are Expression Controls named "Tool – Setting" (for example "Bounce – Amplitude"), so you can change them later in Effect Controls.
 
+## Widgets
+
+Widgets are bigger cells with their own controls. The Motion Kit panel starts with all five, and any panel can add them from the **+** cell or Layout & Style. Each action is one undo step, and the widgets remember their values.
+
+| Widget | Size | What it does |
+|---|---|---|
+| Ease | 2 × 2 | Three sliders: **Ease In** and **Ease Out** are the incoming and outgoing influence (0.1–100 %), **Speed** is the speed at the key. Releasing a slider applies all three to the selected keyframes through Ease Keyframes. Click a slider's icon to reset it. Shift-click opens the Ease Keyframes curve editor. |
+| Key Copy/Paste | 2 × 1 | **Copy** keeps the selected keyframes of the selected properties: values, eases, interpolation, spatial tangents and timing. **Paste** puts them at the playhead on the selected properties: the first copied property onto the first selected one, and so on, or one copied property onto all of them. Shift-click Paste pastes only the easing onto the selected keyframes. |
+| Interpolation | 2 × 1 | Sets the selected keyframes to Bezier, Hold or Linear on both sides. A key switched back to Bezier gets its ease back. |
+| Anchor | 2 × 2 | Click a point of the 3 × 3 grid to move the anchor of the selected layers or shape groups there without moving them. The last point used is highlighted. Shift-click opens Move Anchor Point's options (Include masks). |
+| Sequencer | 2 × 1 | **Amount** and **Step** fields, then top-to-bottom, bottom-to-top and from-the-centre buttons. It staggers the selected keyframes when some are selected on the selected layers, otherwise the layers. Shift-click opens the full Sequencer options (random order, curves). |
+
+Two of these are Motion Kit's own definitions:
+
+- **Speed** is a percentage of the segment's average speed: 0 % stops at the key, 100 % keeps the average speed, up to 200 %. Ease Keyframes caps it at 100 / influence times the average, so an ease can't overshoot.
+- **Amount and Step:** item *k* of the order moves Amount × floor(*k* / Step) frames. Amount is frames per step (negative or fractional too; results round to whole frames), and Step is how many items share each step. From the centre, *k* is the distance from the middle, so the middle item (or the two middle items) keeps its time and both sides move alike.
+
 ## Tools
 
-**Animate** (orange)
+The Motion Kit panel has every tool except Ease Copy and Move Anchor Point, which the Key Copy/Paste and Anchor widgets replace there. Their buttons still work in the other panels and saved layouts.
+
+**Animate**
 
 | Tool | What it does |
 |---|---|
@@ -36,11 +57,11 @@ Controls a tool adds are Expression Controls named "Tool – Setting" (for examp
 | Loop In/Out | Adds a cycle, pingpong, offset or continue loop before, after or on both sides of the keyframes. |
 | Ease Keyframes | Sets the ease on the selected keys from a draggable speed-curve editor or presets. |
 | Ease Copy | Copies a key's value, ease, interpolation and expression, then pastes your choice of them onto the selected keys. |
-| Sequencer | Staggers layers' start times, or the selected keyframes. Order: top to bottom, bottom to top, selection or random. Step in frames, with an ease curve. |
+| Sequencer | Staggers layers' start times, or the selected keyframes. Order: top to bottom, bottom to top, from the centre, selection or random. Step in frames, items per step, with an ease curve. |
 | Clone Keys to Playhead | Copies the selected keys to the current time, keeping their spacing. |
 | Fix Keys Time | Snaps keyframes onto whole frames. |
 
-**Rig** (teal)
+**Rig**
 
 | Tool | What it does |
 |---|---|
@@ -51,7 +72,7 @@ Controls a tool adds are Expression Controls named "Tool – Setting" (for examp
 | Position Trace | A live trail of a layer's motion, with frames, offset, smoothing, detail and taper controls. |
 | Move Anchor Point | Moves anchors to a point on a 3 × 3 grid without moving the layers, also per keyframe and for shape groups. |
 
-**Shapes** (violet)
+**Shapes**
 
 | Tool | What it does |
 |---|---|
@@ -62,7 +83,7 @@ Controls a tool adds are Expression Controls named "Tool – Setting" (for examp
 | Shapes from Vector | Converts SVG, PDF or Illustrator layers to shape layers. |
 | Collect Colors | Collects the colours used in the selected layers into a palette layer and a null of Color Controls, merging similar colours. |
 
-**Comp** (blue)
+**Comp**
 
 | Tool | What it does |
 |---|---|
@@ -73,13 +94,15 @@ Controls a tool adds are Expression Controls named "Tool – Setting" (for examp
 
 ## Layouts and styling
 
+Every panel starts with the same dark theme: a dark blue-green background, cells outlined with rounded corners, white line icons with coral accents, and icon-only buttons. Panels are laid out to their content: the grid is as wide as the columns it uses, and the header is as wide as the grid.
+
 The ⚙ button opens Layout & Style, which has five tabs:
 
-- **Buttons:** all four panels side by side. Drag buttons within and between them, add tools, remove buttons, and rename panels.
+- **Buttons:** all five panels side by side. Drag buttons within and between them, add tools and widgets, remove buttons, and rename panels.
 - **Style:** per panel:
   - cell size, spacing and columns;
-  - panel, button and border colours, and the icon and text colour;
-  - whether buttons show the icon, the name, or both;
+  - panel, button and border colours, the icon and text colour, the accent colour and the corner radius;
+  - whether buttons show the icon (the default), the name, or both;
   - whether the title row and the command box are shown.
 - **Button:** a button's own name, visibility and colours.
 - **Layouts:** named layouts. Switch, add, duplicate, rename, delete or reset them, and save them to a `.json` file or load one, replacing or merging.
@@ -87,9 +110,14 @@ The ⚙ button opens Layout & Style, which has five tabs:
 
 Saving and loading layout files needs Preferences ▸ Scripting & Expressions ▸ Allow Scripts to Write Files.
 
+Layouts saved by Motion Kit 0.1 had four panels. They load with the Motion Kit panel added in its default content, and every style value still at the old default (such as the icon-and-name buttons) takes the new default. Values you changed are kept.
+
 ## Limits in EffectCraft
 
 - **Columns are a setting.** EffectCraft doesn't tell scripts how wide a docked panel is, so set **Columns** in Style to fit your dock.
+- **Help tips need custom-drawn buttons.** EffectCraft shows a help tip for a custom-drawn control but not for a custom-drawn group, so every button and every widget control is a drawn `iconbutton`.
+- **Bold is drawn twice.** EffectCraft draws every script font as regular, so the panel title is drawn twice, 0.6 px apart.
+- **No join style.** ScriptUI pens have no round joins, so icons draw a dot on every corner.
 - **Colours are pre-corrected.** EffectCraft 0.16 and earlier draw script colours too bright ([storytold/effectcraft#2272](https://github.com/storytold/effectcraft/pull/2272)), so Motion Kit corrects them when it runs in EffectCraft.
 - **Deep duplicate needs EffectCraft 0.16 or later.** Duplicate Comp's Deep option needs `replaceSource`. On older versions it makes a plain duplicate and says so.
 - **Some tools overwrite the clipboard.** Unprecomp and Merge Shapes copy through EffectCraft's clipboard.
@@ -100,9 +128,9 @@ Saving and loading layout files needs Preferences ▸ Scripting & Expressions �
 ```sh
 python3 build.py              # src/ -> dist/
 python3 build.py --check      # fails when dist/ is out of date
-tests/run_all.sh              # 28 headless test files in effectcraft-cli
+tests/run_all.sh              # 30 headless test files in effectcraft-cli
 ```
 
-The tests run every tool through its API, check the results numerically, and render frames inside EffectCraft to confirm that tools which shouldn't move anything don't. [CONTRIBUTING-TOOLS.md](CONTRIBUTING-TOOLS.md) explains how to add a tool.
+The tests run every tool through its API, check the results numerically, and render frames inside EffectCraft to confirm that tools which shouldn't move anything don't. The panel and widget tests click, drag and Shift-click through EffectCraft's own ScriptUI mouse routing. [CONTRIBUTING-TOOLS.md](CONTRIBUTING-TOOLS.md) explains how to add a tool.
 
 Motion Kit is an independent project, written from scratch for EffectCraft. Its code, expressions and icons are original. Licensed MIT OR Apache-2.0.

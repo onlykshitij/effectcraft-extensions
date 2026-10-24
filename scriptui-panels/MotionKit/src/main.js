@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Entry point (last in the bundle, outside the shared model): publish $.global.MotionKit once,
-// then build this file's UI. MK_PANEL is 1-4 or "menu" in the panels and null in
-// motionkit-lib.jsx (no UI).
+// then build this file's UI. MK_PANEL is 1-4, "all" (the combined panel 5) or "menu" in the
+// panels and null in motionkit-lib.jsx (no UI).
 
 if (!MK.api) {
   MK.api = {
@@ -10,6 +10,7 @@ if (!MK.api) {
     toolOrder: MK.toolOrder,
     loadErrors: MK.loadErrors,
     run: MK.run,
+    callTool: MK.callTool,
     registerTool: MK.registerTool,
     describe: MK.describe,
     catalog: MK.catalog,

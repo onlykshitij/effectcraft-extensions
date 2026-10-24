@@ -415,6 +415,14 @@ MK.keys = (function () {
     }
     return ks.length;
   };
+  // Sets both interpolation types of key i when the property takes them; false when it can't.
+  // Only the types change: EffectCraft keeps a key's temporal ease while it is Linear or Hold,
+  // so switching back to Bezier brings the ease back (setTemporalEaseAtKey would overwrite it).
+  K.setInterp = function (prop, i, inType, outType) {
+    if (!prop.isInterpolationTypeValid(inType) || !prop.isInterpolationTypeValid(outType)) return false;
+    prop.setInterpolationTypeAtKey(i, inType, outType);
+    return true;
+  };
   // Removes keys by 1-based index (any order).
   K.remove = function (prop, indices) {
     var a = indices.slice();

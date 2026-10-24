@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Layout model: every operation, named layouts, export/import, invalid input, unknown ids,
-// settings validation, options validation and the command box search.
+// span packing, migration of Motion Kit 0.1 (four-panel) layouts, settings validation, options
+// validation and the command box search.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var L = MotionKit.layout;
 function ids(l, p) { var a = []; for (var i = 0; i < l.panels[p].items.length; i++) a.push(l.panels[p].items[i].id); return a.join(","); }
@@ -8,30 +9,35 @@ function js(v) { return JSON.stringify(v); }
 
 // ---- the default layout
 var d = L.defaultLayout();
-T.check(d.panels.length === 4, "four panels");
+T.check(d.panels.length === 5, "five panels");
 T.check(d.panels[0].title === "Animate" && ids(d, 0) === "bounce,elastic,loop,easeKeys,easeCopy,sequencer,cloneKeys,fixKeys", "panel 1 Animate in spec order");
 T.check(d.panels[1].title === "Rig" && ids(d, 1) === "limb,parentNull,nullsPoints,sliderToPath,positionTrace,moveAnchor", "panel 2 Rig in spec order");
 T.check(d.panels[2].title === "Shapes" && ids(d, 2) === "extractShapes,mergeShapes,selector,strokeStyle,shapesFromVector,collectColors", "panel 3 Shapes in spec order");
 T.check(d.panels[3].title === "Comp" && ids(d, 3) === "cropComp,unprecomp,duplicateComp,gifExport", "panel 4 Comp in spec order");
+var ALL = "ease,keyCopyPaste,interpolation,anchor,sequencerWidget,bounce,elastic,loop,easeKeys,sequencer,cloneKeys,fixKeys," +
+  "limb,parentNull,nullsPoints,sliderToPath,positionTrace,extractShapes,mergeShapes,selector,strokeStyle,shapesFromVector,collectColors," +
+  "cropComp,unprecomp,duplicateComp,gifExport";
+T.check(d.panels[4].title === "Motion Kit" && ids(d, 4) === ALL, "panel 5 Motion Kit: the widgets, then every tool in category order without easeCopy and moveAnchor");
 var s0 = d.panels[0].style, s1 = d.panels[1].style;
-T.check(s0.cellSize === 44 && s0.spacing === 4 && s0.panelBg === null && s0.cellBg === "#2B2B2B" && s0.cellBorder === null &&
-  s0.buttonMode === "iconName" && s0.hideTitle === false && s0.fg === "#D8D8D8" && s0.columns === 4, "default style values");
+T.check(s0.cellSize === 56 && s0.spacing === 10 && s0.panelBg === "#0D1B21" && s0.cellBg === "#0D1B21" && s0.cellBorder === "#2A3B42" &&
+  s0.buttonMode === "icon" && s0.hideTitle === false && s0.fg === "#FFFFFF" && s0.accent === "#F27A7A" && s0.radius === 6 && s0.columns === 4, "default style values (the dark theme, icon only)");
+T.check(JSON.stringify(d.panels[4].style) === JSON.stringify(s1), "every panel but the first has the same default style");
 T.check(s0.showCommandBox === true && s1.showCommandBox === false, "command box on panel 1 only");
 
 // ---- normalize: every value validated, unknown ids kept
 var bad = {
   panels: [
-    { title: "  ", style: { cellSize: 500, spacing: -3, columns: 99, panelBg: "#abc", cellBg: "nope", cellBorder: "#00ff00", buttonMode: "huge", hideTitle: "yes", fg: 12, showCommandBox: 0 },
+    { title: "  ", style: { cellSize: 500, spacing: -3, columns: 99, panelBg: "#abc", cellBg: "nope", cellBorder: "#00ff00", buttonMode: "huge", hideTitle: "yes", fg: 12, accent: "red", radius: 40, showCommandBox: 0 },
       items: ["bounce", { id: "futureTool", name: "Future", showIcon: false, bg: "#zzzzzz", accent: "#112233" }, { id: "" }, null, 5, "bounce"] },
     "junk"
   ]
 };
 var n = L.normalize(bad);
 var ns = n.panels[0].style;
-T.check(n.panels.length === 4 && n.panels[0].title === "Panel 1" && n.panels[1].title === "Panel 2", "missing and blank panels get defaults");
-T.check(ns.cellSize === 96 && ns.spacing === 0 && ns.columns === 12, "numbers clamped (cellSize 96, spacing 0, columns 12)");
-T.check(ns.panelBg === "#AABBCC" && ns.cellBg === "#2B2B2B" && ns.cellBorder === "#00FF00" && ns.fg === "#D8D8D8", "colours normalised or defaulted");
-T.check(ns.buttonMode === "iconName" && ns.hideTitle === false && ns.showCommandBox === true, "bad enums and booleans defaulted");
+T.check(n.panels.length === 5 && n.panels[0].title === "Panel 1" && n.panels[1].title === "Panel 2" && ids(n, 4) === "", "missing and blank panels get defaults (empty)");
+T.check(ns.cellSize === 96 && ns.spacing === 0 && ns.columns === 12 && ns.radius === 16, "numbers clamped (cellSize 96, spacing 0, columns 12, radius 16)");
+T.check(ns.panelBg === "#AABBCC" && ns.cellBg === "#0D1B21" && ns.cellBorder === "#00FF00" && ns.fg === "#FFFFFF" && ns.accent === "#F27A7A", "colours normalised or defaulted");
+T.check(ns.buttonMode === "icon" && ns.hideTitle === false && ns.showCommandBox === true, "bad enums and booleans defaulted");
 T.check(ids(n, 0) === "bounce,futureTool", "bad items dropped, duplicates removed, unknown id kept");
 var fut = n.panels[0].items[1];
 T.check(fut.name === "Future" && fut.showIcon === false && fut.bg === undefined && fut.accent === "#112233", "item overrides validated");
@@ -50,7 +56,8 @@ var m3 = L.moveItem(d, 0, 7, 0, 99);
 T.check(ids(m3, 0).split(",")[7] === "fixKeys", "toIndex clamped to the end");
 T.throws(function () { L.moveItem(L.addItem(d, 1, "bounce"), 0, 0, 1, 0); }, "moveItem refuses an id the target panel has");
 T.throws(function () { L.moveItem(d, 0, 42, 0, 0); }, "moveItem refuses a bad index");
-T.throws(function () { L.moveItem(d, 4, 0, 0, 0); }, "moveItem refuses a bad panel");
+T.check(ids(L.moveItem(d, 4, 0, 0, 0), 0).indexOf("ease,bounce") === 0, "moveItem from panel 5");
+T.throws(function () { L.moveItem(d, 5, 0, 0, 0); }, "moveItem refuses a bad panel");
 
 var a1 = L.addItem(d, 3, "parentNull");
 T.check(ids(a1, 3) === "cropComp,unprecomp,duplicateComp,gifExport,parentNull", "addItem appends");
@@ -62,11 +69,11 @@ var r1 = L.removeItem(d, 3, 0);
 T.check(ids(r1, 3) === "unprecomp,duplicateComp,gifExport", "removeItem");
 T.throws(function () { L.removeItem(d, 3, 4); }, "removeItem refuses a bad index");
 
-var st1 = L.setStyle(d, 2, { cellSize: 30, buttonMode: "icon", panelBg: "#102030", cellBorder: null, spacing: "wide", fg: "#nothex" });
+var st1 = L.setStyle(d, 2, { cellSize: 30, buttonMode: "name", panelBg: "#102030", cellBorder: null, spacing: "wide", fg: "#nothex", accent: "#00ff00", radius: 3 });
 var ss = st1.panels[2].style;
-T.check(ss.cellSize === 30 && ss.buttonMode === "icon" && ss.panelBg === "#102030", "setStyle merges valid values");
-T.check(ss.spacing === 4 && ss.fg === "#D8D8D8" && ss.cellBg === "#2B2B2B", "setStyle keeps current values for invalid input");
-T.check(d.panels[2].style.cellSize === 44, "setStyle leaves its input alone");
+T.check(ss.cellSize === 30 && ss.buttonMode === "name" && ss.panelBg === "#102030" && ss.cellBorder === null && ss.accent === "#00FF00" && ss.radius === 3, "setStyle merges valid values");
+T.check(ss.spacing === 10 && ss.fg === "#FFFFFF" && ss.cellBg === "#0D1B21", "setStyle keeps current values for invalid input");
+T.check(d.panels[2].style.cellSize === 56, "setStyle leaves its input alone");
 var si = L.setItem(d, 0, 1, { name: "Spring", showName: false, accent: "#ff0000", bg: "bogus", id: "hack" });
 var it = si.panels[0].items[1];
 T.check(it.id === "elastic" && it.name === "Spring" && it.showName === false && it.accent === "#FF0000" && it.bg === undefined, "setItem sets overrides, ignores id and bad colours");
@@ -145,7 +152,50 @@ app.settings.saveSetting("MotionKit", "layouts", "{broken json");
 app.settings.saveSetting("MotionKit", "activeLayout", "\"Gone\"");
 T.check(js(L.list()) === "[\"Default\"]" && L.active() === "Default" && js(L.get()) === js(L.defaultLayout()), "corrupt stored layouts fall back to the default");
 app.settings.saveSetting("MotionKit", "layouts", JSON.stringify({ "": {}, "Odd": { panels: [{ style: { cellSize: "big" } }] } }));
-T.check(js(L.list()) === "[\"Odd\"]" && L.get().panels[0].style.cellSize === 44, "invalid names dropped, invalid values defaulted");
+T.check(js(L.list()) === "[\"Odd\"]" && L.get().panels[0].style.cellSize === 56, "invalid names dropped, invalid values defaulted");
+
+// ---- migration: a layout saved by Motion Kit 0.1 has four panels and every style key
+var V1 = { cellSize: 44, spacing: 4, columns: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null, buttonMode: "iconName", hideTitle: false, fg: "#D8D8D8", showCommandBox: true };
+function v1Panel(title, items, style) {
+  var st = JSON.parse(js(V1));
+  for (var k in style || {}) st[k] = style[k];
+  return { title: title, style: st, items: items };
+}
+var old = {
+  panels: [v1Panel("Animate", [{ id: "bounce" }, { id: "loop", accent: "#00FF00" }]), v1Panel("Mine", [{ id: "limb" }], { buttonMode: "name", cellSize: 60, fg: "#EEEEEE", showCommandBox: false }),
+    v1Panel("Shapes", []), v1Panel("Comp", [{ id: "gifExport" }], { panelBg: "#101010", cellBorder: "#333333" })]
+};
+app.settings.saveSetting("MotionKit", "layouts", js({ Default: old, Second: { panels: [v1Panel("A", []), v1Panel("B", []), v1Panel("C", []), v1Panel("D", [])] } }));
+app.settings.saveSetting("MotionKit", "activeLayout", "\"Default\"");
+var mig = L.get();
+T.check(mig.panels.length === 5 && js(L.list()) === "[\"Default\",\"Second\"]", "a v1 layout loads with five panels");
+T.check(ids(mig, 0) === "bounce,loop" && mig.panels[0].items[1].accent === "#00FF00" && mig.panels[1].title === "Mine" && ids(mig, 3) === "gifExport", "panels 1-4 keep their titles, buttons and overrides");
+T.check(mig.panels[4].title === "Motion Kit" && ids(mig, 4) === ALL && ids(L.get("Second"), 4) === ALL, "panel 5 gets its default content, in every v1 layout");
+var m0 = mig.panels[0].style, m1 = mig.panels[1].style, m3 = mig.panels[3].style;
+T.check(m0.buttonMode === "icon" && m0.cellSize === 56 && m0.spacing === 10 && m0.panelBg === "#0D1B21" && m0.cellBg === "#0D1B21" && m0.cellBorder === "#2A3B42" && m0.fg === "#FFFFFF" && m0.showCommandBox === true,
+  "style values equal to the v1 defaults become the new defaults (iconName -> icon)");
+T.check(m1.buttonMode === "name" && m1.cellSize === 60 && m1.fg === "#EEEEEE" && m1.spacing === 10 && m1.showCommandBox === false, "values the user changed are kept");
+T.check(m3.panelBg === "#101010" && m3.cellBorder === "#333333" && m3.buttonMode === "icon", "changed colours are kept too");
+L.save(L.get());
+T.check(js(JSON.parse(app.settings.getSetting("MotionKit", "layouts")).Default) === js(L.get()), "saving stores the migrated five-panel layout");
+var five = L.normalize({ panels: [v1Panel("A", []), v1Panel("B", []), v1Panel("C", []), v1Panel("D", []), v1Panel("E", [{ id: "loop" }])] });
+T.check(five.panels[0].style.buttonMode === "iconName" && ids(five, 4) === "loop", "a five-panel layout isn't migrated: its iconName stays");
+L.resetAll();
+
+// ---- packing: first fit, row by row, later items fill holes
+var P = L.pack;
+function at(r) { return js(r.at); }
+var pk = P([[2, 2], [2, 1], [2, 1], [2, 2], [2, 1], [1, 1], [1, 1], [1, 1]], 4);
+T.check(pk.cols === 4 && pk.rows === 5 && at(pk) === "[[0,0],[2,0],[2,1],[0,2],[2,2],[2,3],[3,3],[0,4]]", "the combined layout: 1 x 1 items fill the holes beside the 2 x 2 widgets (" + at(pk) + ")");
+var hole = P([[1, 1], [2, 2], [3, 1], [1, 1]], 3);
+T.check(at(hole) === "[[0,0],[1,0],[0,2],[0,1]]" && hole.rows === 3, "a later 1 x 1 goes back to a hole left above a wide item (" + at(hole) + ")");
+var wide = P([[6, 2], [1, 1]], 4);
+T.check(js(wide.spans) === "[[4,2],[1,1]]" && at(wide) === "[[0,0],[0,2]]" && wide.cols === 4, "an item wider than the columns is clamped to them");
+T.check(js(P([], 4)) === js({ cols: 0, rows: 0, at: [], spans: [] }), "an empty layout packs to nothing");
+var few = P([[1, 1], [1, 1], [1, 1]], 4);
+T.check(few.cols === 3 && few.rows === 1, "fewer items than columns: the grid is only as wide as they are");
+T.check(P([[2, 1], [1, 1]], 4).cols === 3 && P([[1, 1], [1, 1]], 1).cols === 1 && at(P([[1, 1], [1, 1]], 1)) === "[[0,0],[0,1]]", "the column count is the items' total width, capped by the setting");
+T.check(js(P([[0, -1], "x", [1.6, 1.4]], 4).spans) === "[[1,1],[1,1],[2,1]]", "bad spans become 1 x 1; others round");
 
 // ---- options validation
 var O = MotionKit.options, bounce = MotionKit.tools.bounce;

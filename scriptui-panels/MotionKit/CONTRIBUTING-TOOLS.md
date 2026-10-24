@@ -23,7 +23,7 @@ A tool is one file, `src/tools/<category>/<id>.js`, that calls `MK.registerTool(
   MK.registerTool({
     id: "myTool",              // lowerCamelCase, unique
     name: NAME,                // button label and undo name ("Motion Kit: My Tool")
-    category: "Rig",           // Animate, Rig, Shapes or Comp (sets the accent colour)
+    category: "Rig",           // Animate, Rig, Shapes or Comp (its group in the menu and Add lists)
     description: "One line: what a click does.",
     icon: ["M3 20 L21 4", { d: "O12 12 3", fill: "accent" }],
     options: [
@@ -68,6 +68,36 @@ Optional fields of the definition:
 - `needsComp: false` lets the tool run without an active comp (Project panel tools).
 - `dot: function () { return bool; }` shows an accent dot on the button while true, for example while a clipboard holds something.
 - `openOptions: function () {...}` replaces the generated options dialog, for a dialog of your own such as a curve editor. Return a run result or null.
+- `api: {...}` holds functions other tools and widgets reuse, as `MK.tools[id].api` (Ease Copy's `paste`, for example).
+
+To reuse another tool inside your `run`, call `MK.callTool(id, ctx, options)`. It runs that tool's `run` with the same `ctx`, so everything stays one undo step, with the tool's saved options and `options` on top.
+
+## Widgets
+
+A widget is a bigger cell with controls of its own, such as sliders or a grid of buttons. It is a registry entry like a tool, in `src/tools/widgets/<id>.js`, with three more fields:
+
+- `kind: "widget"`;
+- `span: [cols, rows]`, its size in grid cells (the panel packs items first fit, so smaller items fill the holes beside it);
+- `build(w)`, which adds the controls to the cell.
+
+`run(ctx, opts)` does the work, through the same runner as a tool, so a widget's actions are undo steps with the usual error handling. Give it an option such as `action` or `type` for each thing it can do. Its `options` are also where it keeps its values: `w.save()` stores them in `toolOptions` under the widget's id. `src/tools/widgets/interpolation.js` is the smallest example.
+
+`build(w)` gets:
+
+| Field | |
+|---|---|
+| `w.w`, `w.h` | the cell's size in px |
+| `w.style`, `w.look` | the panel style (`fg`, `accent`, `radius`...) and the cell's colours |
+| `w.values` | the saved options |
+| `w.editing` | true in edit mode: the panel ignores the widget's controls then |
+| `w.part(name, [x, y, w, h], handlers)` | an interactive control, a custom-drawn `iconbutton`. `handlers`: `tip` (required, the help tip), `draw(g, part)`, `click({shift})`, and for drags `press(x, y)`, `drag(x, y)`, `release()`, with x and y in the part |
+| `w.field(name, rect, text, tip, onChange)` | a text field |
+| `w.paint = function (g) {...}` | drawing on the cell's background, such as labels |
+| `w.onShift = function () {...}` | Shift-click (or right-click) anywhere on the widget |
+| `w.save(partial)`, `w.run(options)`, `w.options(toolId)` | save values, run the widget, open a tool's options |
+| `w.hover(control)` | true while the pointer is over it |
+
+Make every interactive part a `part`, never a drawn group: EffectCraft shows a help tip only for custom-drawn controls that aren't containers. The panel feeds parts through its own mouse listeners, so don't add `onClick` or listeners of your own, or a click could run twice. `MK.ui.gfx` has drawing helpers (`box`, `circle`, `text`, `button`), and `MK.THEME` has the fixed theme colours.
 
 ## Options
 
@@ -86,7 +116,7 @@ Optional fields of the definition:
 
 ## Icons
 
-Icons are drawn on a 24 x 24 grid in two colours: `fg` for the base strokes and `accent` for one highlighted part. An icon is an array of layers. A layer is a path string (stroked in `fg` at 1.6 units) or `{d, stroke, fill, w, alpha}`, where `stroke` and `fill` are `"fg"`, `"accent"` or a hex colour and `w` is the pen width in grid units.
+Icons are drawn on a 24 x 24 grid in two colours: `fg` for the base strokes (white in the default theme) and `accent` for one highlighted part (coral). An icon is an array of layers. A layer is a path string (stroked in `fg` at 2 units) or `{d, stroke, fill, w, alpha}`, where `stroke` and `fill` are `"fg"`, `"accent"` or a hex colour and `w` is the pen width in grid units. Strokes get round corners and ends: the renderer draws a dot on every corner sharper than 30 degrees and on open ends.
 
 | Command | |
 |---|---|
@@ -148,6 +178,7 @@ These conversions run EffectCraft's own `toComp` / `fromComp` / `toWorld` / `fro
 - `readAll(prop)` and `readSelected(prop)`.
 - `write(prop, key, time?, parts?)` writes such an object at `time` (the default is its own) and returns the new index. `parts` such as `{value: false, interp: false}` limits what is written; the parts are `value`, `ease`, `interp`, `spatial` and `roving`.
 - `setEase(prop, i, inEase, outEase)` fits eases to the property's dimensions, reusing the first entry when the counts differ. `fit(list, dims)` returns the `KeyframeEase` list.
+- `setInterp(prop, i, inType, outType)` sets only the interpolation types (false when the property can't take them). EffectCraft keeps a key's ease while it is Linear or Hold, so switching back to Bezier this way brings the ease back.
 - `remove(prop, indices)` removes keys by index, in any order.
 
 ### Shapes: `MK.shapes`
@@ -195,7 +226,7 @@ T.done();
 - `T.near(a, b, eps)` compares numbers or arrays. `T.throws(fn, what)` expects an error.
 - `T.comp`, `T.solid` and `T.select` set up the scene.
 - `T.alerts` and `T.lastAlert()` collect alerts. Set `T.answer` (true or false) to answer `confirm`, and `T.confirms` lists the questions.
-- `T.mouse(win, control, type, x, y, extra)` sends a synthetic mouse event through EffectCraft's ScriptUI routing.
+- `T.mouse(win, control, type, x, y, extra)` sends a synthetic mouse event through EffectCraft's ScriptUI routing. `tests/test_widgets.jsx` drives widgets this way.
 - `T.done()` prints the "all checks passed" line the runner looks for.
 
 Test failure paths too: bad selections change nothing, foreign expressions are kept on "no", and one Undo (`app.executeCommand(app.findMenuCommandId("Undo"))`) reverts the whole tool.
@@ -206,7 +237,7 @@ Agents working in parallel build to their own folder and test that build:
 
 ```sh
 cd scriptui-panels/MotionKit
-python3 build.py --out /tmp/me/dist                 # writes the six bundles there
+python3 build.py --out /tmp/me/dist                 # writes the seven bundles there
 MK_DIST=/tmp/me/dist tests/run_all.sh               # every test against that build
 MK_DIST=/tmp/me/dist tests/run_all.sh test_myTool.jsx test_ui.jsx
 ```
@@ -225,4 +256,6 @@ These were found while building the core, in EffectCraft 0.14.
 - Expression results aren't clamped: Opacity can read 120.
 - Headless, a modal `dialog.show()` ends the script run there, so build dialogs without showing them in tests (`MK.optionsDialog.build`, `MK.layoutDialog.build`). `confirm()` answers yes, file writes are refused (the error names Preferences ▸ Scripting & Expressions ▸ Allow Scripts to Write Files and Access Network), `File.saveDialog` / `openDialog` return null, and `app.scheduleTask` tasks don't run.
 - ScriptUI delivers no key events, and an edit text commits (`onChange`) when it loses focus. Mouse events carry `clientX` / `clientY` relative to the control under the pointer and bubble to its containers.
+- A custom-drawn control (`onDraw` without `drawOSControl()`) shows its `helpTip` unless it is a container (group, panel). A custom-drawn `iconbutton` still gets mousedown, mousemove and mouseup. A click on it reaches the script as a plain `click`, which runs `onClick` only, so a button driven by mouse listeners runs once.
+- EffectCraft draws every script font as regular weight, and pens have no join style.
 - Dropdown Menu Control exists, but scripts can't set its item names.

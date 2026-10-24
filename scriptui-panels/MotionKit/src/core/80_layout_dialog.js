@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The Layout & Style dialog. It edits a copy of the stored state ({layouts, active, library});
 // OK saves it (one settings write, so every open panel rebuilds), Cancel drops it.
-// Tabs: Buttons (four drawn columns: click to select, drag within and between columns, or use
+// Tabs: Buttons (five drawn columns: click to select, drag within and between columns, or use
 // the arrow buttons), Style (the chosen panel), Button (the selected button's overrides),
 // Layouts and Library. build() makes the dialog without showing it; tests drive it headless.
 
 MK.layoutDialog = (function () {
   var U = MK.util, W = MK.widgets;
-  var ROW_H = 20, LIST_W = 150, MIN_ROWS = 8;
+  var ROW_H = 20, LIST_W = 136, MIN_ROWS = 8;
   var TABS = ["buttons", "style", "button", "layouts", "library"];
 
   function build(panelIndex, tab) {
@@ -172,7 +172,7 @@ MK.layoutDialog = (function () {
     D.addList = row2.add("dropdownlist", undefined, []);
     D.addList.preferredSize = [220, -1];
     D.btnAdd = row2.add("button", undefined, "Add Tool");
-    D.btnAdd.helpTip = "Adds the chosen tool or library item after the selected button";
+    D.btnAdd.helpTip = "Adds the chosen tool, widget or library item after the selected button";
     D.btnAdd.onClick = function () {
       var s = D.addList.selection;
       if (!s || !D.addIds[s.index]) return;
@@ -239,7 +239,7 @@ MK.layoutDialog = (function () {
   function styleTab(D, tab) {
     var r0 = W.row(tab);
     W.label(r0, "Panel:", 110);
-    D.stylePanel = r0.add("dropdownlist", undefined, ["1", "2", "3", "4"]);
+    D.stylePanel = r0.add("dropdownlist", undefined, ["1", "2", "3", "4", "5"]);
     D.stylePanel.onChange = function () {
       if (D.syncing || !D.stylePanel.selection) return;
       D.panel = D.stylePanel.selection.index;
@@ -279,6 +279,8 @@ MK.layoutDialog = (function () {
     D.styleCellBg = color("Button colour", "cellBg", false);
     D.styleBorder = color("Button border", "cellBorder", true, "empty: none");
     D.styleFg = color("Icon and text", "fg", false);
+    D.styleAccent = color("Accent", "accent", false);
+    D.styleRadius = number("Corner radius", "radius", 0, 16);
     var r1 = W.row(tab);
     W.label(r1, "Buttons show", 110);
     D.styleMode = r1.add("dropdownlist", undefined, ["Icon", "Name", "Icon and name"]);
@@ -535,13 +537,13 @@ MK.layoutDialog = (function () {
         D.lists[q].mkRows = rows;
         D.lists[q].preferredSize = [LIST_W, rows * ROW_H];
       }
-      var cat = MK.catalog(D.st.library);
+      var cat = MK.catalog(D.st.library, true);
       D.addIds = [];
       var labels = [];
       for (var c = 0; c < cat.length; c++) {
         if (MK.layout.findId(pc.items, cat[c].id) >= 0) continue;
         D.addIds.push(cat[c].id);
-        labels.push(cat[c].category + ": " + cat[c].name);
+        labels.push(MK.ui.entryLabel(cat[c]));
       }
       fillList(D.addList, labels, labels.length ? 0 : -1);
       D.addList.enabled = D.btnAdd.enabled = labels.length > 0;
@@ -564,6 +566,8 @@ MK.layoutDialog = (function () {
       D.styleCellBg.set(s.cellBg);
       D.styleBorder.set(s.cellBorder);
       D.styleFg.set(s.fg);
+      D.styleAccent.set(s.accent);
+      D.styleRadius.text = String(s.radius);
       D.styleMode.selection = U.indexOf(MK.layout.MODES, s.buttonMode);
       D.styleHide.value = s.hideTitle;
       D.styleCmd.value = s.showCommandBox;

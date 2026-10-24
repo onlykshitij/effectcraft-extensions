@@ -49,7 +49,7 @@ T.check(!MotionKit.run("lib:doesnotexist").ok, "an unknown library id is reporte
 var L = MotionKit.layout;
 L.save(L.addItem(L.get(), 0, ex.id, 0));
 var look = MotionKit.ui.look(L.get().panels[0].items[0], L.get().panels[0].style);
-T.check(look.name === "Tenth Width" && look.accent === "#9AA0A6" && !look.missing && look.icon === MotionKit.helpers.icons.builtin.libExpression, "a library button: its name, grey accent, braces icon");
+T.check(look.name === "Tenth Width" && look.accent === L.get().panels[0].style.accent && !look.missing && look.icon === MotionKit.helpers.icons.builtin.libExpression, "a library button: its name, the panel's accent, braces icon");
 T.check(MotionKit.ui.look({ id: sc.id }, L.get().panels[0].style).icon === MotionKit.helpers.icons.builtin.libScript, "script items show the prompt icon");
 var styled = Lib.save(Lib.normalize({ id: sc.id, kind: "script", name: "Set Global", code: "1", icon: "tool:loop", accent: "#FF0000", bg: "#000000" }));
 var sl = MotionKit.ui.look({ id: sc.id }, L.get().panels[0].style);

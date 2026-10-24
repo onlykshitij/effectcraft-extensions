@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// Sequencer: layer in-points staggered for each order (top to bottom, bottom to top, selection,
-// seeded random: same seed same order), each curve, negative and fractional steps rounded to
-// frames, keyframes moving with their layer; Keyframes mode moves each layer's selected keys
-// together; the Reseed button; bad selections; one undo step.
+// Sequencer: layer in-points staggered for each order (top to bottom, bottom to top, from the
+// centre with odd and even counts, selection, seeded random: same seed same order), each curve,
+// several items per step, negative and fractional steps rounded to frames, keyframes moving
+// with their layer; Keyframes mode moves each layer's selected keys together; the Reseed
+// button; bad selections; one undo step.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var LIN = KeyframeInterpolationType.LINEAR, BEZ = KeyframeInterpolationType.BEZIER;
 var comp = T.comp("Sequencer Test"), F = comp.frameDuration;
@@ -85,6 +86,27 @@ T.check(frames(1) === "0,-2,-4,-6,-8", "a negative step goes earlier (" + frames
 reset();
 run({ order: "topDown", step: 1.5 }, [byIdx(1), byIdx(2), byIdx(3)]);
 T.check(frames(1).indexOf("0,2,3,") === 0, "a fractional step is rounded to whole frames (1.5 x 2 -> 0, 2, 3)");
+// ---- items per step, and the centre order
+reset();
+r = run({ order: "topDown", step: 2, group: 2, curve: "linear" });
+T.check(frames(1) === "0,0,2,2,4" && /2 per step/.test(r.message), "2 items per step: pairs share a time, 2 frames per step (" + frames(1) + ")");
+reset();
+run({ order: "bottomUp", step: 1, group: 3 });
+T.check(frames(0.6) === "1,1,0,0,0", "3 per step from the bottom: the bottom three share the first step, the top two the second (" + frames(0.6) + ")");
+reset();
+r = run({ order: "centre", step: 3, group: 1 });
+T.check(frames(3) === "6,3,0,3,6" && /from the centre/.test(r.message), "from the centre, 5 layers: the middle keeps its time, both sides move alike (" + frames(3) + ")");
+reset();
+run({ order: "centre", step: 3, group: 1 }, [byIdx(1), byIdx(2), byIdx(3), byIdx(4)]);
+T.check(frames(0.2) === "3,0,0,3,10", "from the centre, 4 layers: the two middle ones share the first's time (" + frames(0.2) + ")");
+reset();
+run({ order: "centre", step: 2, group: 2 });
+T.check(frames(3) === "2,0,0,0,2", "from the centre, 2 per step (" + frames(3) + ")");
+reset();
+run({ order: "centre", step: 4, curve: "easeIn", group: 1 });
+T.check(frames(3) === "8,2,0,2,8", "curves apply to the centre order too (" + frames(3) + ")");
+reset();
+run({ order: "topDown", step: 1.5 }, [byIdx(1), byIdx(2), byIdx(3)]);
 var back = MotionKit.run("sequencer", { step: 0 });
 T.check(back.ok && frames(1).indexOf("0,0,0,") === 0, "step 0 lines them up on the first");
 
@@ -138,6 +160,7 @@ var reseed = null, seedEdit = null;
   for (var i = 0; i < (x.children || []).length; i++) walk(x.children[i]);
 })(od.win);
 T.check(reseed && seedEdit && seedEdit.text === "1", "the options show the seed (default 1) with a Reseed button");
+T.check(od.inputs.group.control.text === "1" && od.inputs.order.control.items.length === 5 && od.inputs.order.control.items[2].text === "From the centre", "and Items per step, and the centre order");
 seedEdit.text = "0";
 reseed.notify("onClick");
 var s = Number(seedEdit.text);

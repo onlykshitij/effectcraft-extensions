@@ -27,7 +27,9 @@
     return ctx.done(NAME + ": copied " + describe(clip()) + more + ". Click again to paste onto selected keyframes.");
   }
 
-  function paste(ctx, c, o, props) {
+  // Pastes clipboard `c` (the copy() form) onto the selected keys of `props`. `name` starts the
+  // message (default "Ease Copy"); the Key Copy/Paste widget's Shift-Paste uses this too.
+  function paste(ctx, c, o, props, name) {
     var keys = 0, wrongType = 0, noInterp = 0, exprs = 0;
     for (var n = 0; n < props.length; n++) {
       var p = props[n], sel = MK.sel.selectedKeys(p);
@@ -51,7 +53,7 @@
       }
     }
     var what = U.filter([o.values && "values", o.easing && "easing", o.interp && "interpolation", o.expression && "expression"], function (x) { return !!x; });
-    var msg = NAME + ": pasted " + what.join(", ") + " onto " + keys + (keys === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
+    var msg = (name || NAME) + ": pasted " + what.join(", ") + " onto " + keys + (keys === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
     if (wrongType) msg += " Values skipped on " + wrongType + " of another type.";
     if (noInterp) msg += " Interpolation skipped on " + noInterp + " that can't take it.";
     if (o.expression && !c.expression) msg += " The copied property had no expression.";
@@ -90,6 +92,7 @@
       { d: "M22 16.5 V22 H16.5 Z", fill: "accent" }
     ],
     dot: function () { return !!clip(); },
+    api: { paste: paste },
     options: [
       { key: "values", label: "Paste values (same value type only)", type: "checkbox", "default": false },
       { key: "easing", label: "Paste easing", type: "checkbox", "default": true },

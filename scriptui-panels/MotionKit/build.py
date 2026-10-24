@@ -3,8 +3,9 @@
 """Build the Motion Kit bundles from src/.
 
 EffectCraft installs a ScriptUI panel by copying one file, so every panel is one self-contained
-bundle: src/core/*.js, src/tools/<category>/*.js and src/extras/*.js (each sorted), then
-src/main.js, wrapped in one function. The bundles differ only in their `var MK_PANEL = ...;` line.
+bundle: src/core/*.js, src/tools/<category>/*.js (widgets in src/tools/widgets/) and
+src/extras/*.js (each sorted), then src/main.js, wrapped in one function. The bundles differ
+only in their `var MK_PANEL = ...;` line.
 
     python3 build.py               write dist/
     python3 build.py --out DIR     write DIR/ instead (parallel builds use private folders)
@@ -25,6 +26,7 @@ BUNDLES = [
     ("Motion Kit 2.jsx", "2"),
     ("Motion Kit 3.jsx", "3"),
     ("Motion Kit 4.jsx", "4"),
+    ("Motion Kit.jsx", '"all"'),
     ("Motion Kit Menu.jsx", '"menu"'),
     ("motionkit-lib.jsx", "null"),
 ]

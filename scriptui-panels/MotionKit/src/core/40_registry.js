@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The tool registry, tool options and the runner. A tool file calls MK.registerTool({...});
 // MK.run(id, options) runs it on the active comp and selection, in one undo step, and always
-// returns {ok, message, created}. Nothing a tool throws gets past the runner.
+// returns {ok, message, created}. Nothing a tool throws gets past the runner. Widgets (kind
+// "widget": a bigger cell with its own controls) are registry entries too and run the same way.
 
 MK.tools = {};
 MK.toolOrder = [];
@@ -124,6 +125,12 @@ MK.options = (function () {
     return { ok: true, values: r.values, errors: [] };
   };
   O.has = function (tool) { return !!((tool.options && tool.options.length) || tool.openOptions); };
+  // The saved options with `given` on top (not saved), validated leniently.
+  O.merged = function (tool, given) {
+    var o = O.get(tool), g = given && typeof given === "object" ? given : {};
+    for (var k in g) if (U.has(g, k)) o[k] = g[k];
+    return O.validate(tool, o, false).values;
+  };
   return O;
 })();
 
@@ -132,7 +139,10 @@ MK.options = (function () {
 // Registers a tool. Required: id, name, category (Animate, Rig, Shapes or Comp), description
 // (one line), icon (a path DSL array or draw function, see 50_icons.js) and run(ctx, opts).
 // Optional: options (field list), needsComp (default true), dot() (true shows an accent dot on
-// the button), openOptions() (replaces the generated options dialog).
+// the button), openOptions() (replaces the generated options dialog), api (functions other
+// tools and widgets reuse, as MK.tools[id].api).
+// A widget also has kind: "widget", span: [cols, rows] and build(w), which adds its controls to
+// the panel cell through the widget API `w` (70_panel.js).
 // A bad definition is recorded in MK.loadErrors and skipped, so the other tools still load.
 MK.registerTool = function (def) {
   var errs = [], U = MK.util;
@@ -144,6 +154,10 @@ MK.registerTool = function (def) {
   if (typeof d.description !== "string" || !U.trim(d.description)) errs.push("description is missing");
   if (typeof d.run !== "function") errs.push("run(ctx, opts) is missing");
   if (!(typeof d.icon === "function" || U.isArray(d.icon))) errs.push("icon is missing");
+  var widget = d.kind === "widget";
+  if (d.kind !== undefined && d.kind !== "tool" && !widget) errs.push("kind must be \"tool\" or \"widget\"");
+  if (widget && typeof d.build !== "function") errs.push("a widget needs build(w)");
+  if (widget && !(U.isArray(d.span) && d.span.length === 2 && U.isNum(d.span[0]) && U.isNum(d.span[1]) && d.span[0] >= 1 && d.span[1] >= 1)) errs.push("a widget needs span [cols, rows]");
   errs = errs.concat(MK.options.schemaErrors(d.options || []));
   if (errs.length) {
     var msg = "Motion Kit: tool " + (d.id || "?") + " not loaded: " + errs.join("; ");
@@ -154,7 +168,8 @@ MK.registerTool = function (def) {
   var tool = {
     id: d.id, name: d.name, category: d.category, description: d.description, icon: d.icon,
     options: d.options || [], run: d.run, needsComp: d.needsComp !== false, dot: d.dot || null,
-    openOptions: d.openOptions || null
+    openOptions: d.openOptions || null, api: d.api || {},
+    kind: widget ? "widget" : "tool", span: widget ? [Math.round(d.span[0]), Math.round(d.span[1])] : [1, 1], build: widget ? d.build : null
   };
   MK.tools[tool.id] = tool;
   MK.toolOrder.push(tool.id);
@@ -213,9 +228,7 @@ MK.run = function (id, options, quiet) {
 MK.runTool = function (id, options) {
   var tool = MK.tools[id];
   if (!tool) return { ok: false, message: "\"" + id + "\" isn't a tool in this version of Motion Kit (" + MK.version + ").", created: [] };
-  var saved = MK.options.get(tool), given = options && typeof options === "object" ? options : {};
-  for (var k in given) if (MK.util.has(given, k)) saved[k] = given[k];
-  var opts = MK.options.validate(tool, saved, false).values;
+  var opts = MK.options.merged(tool, options);
   var ctx = MK.makeContext(tool);
   if (tool.needsComp && !ctx.comp) return { ok: false, message: tool.name + ": open a composition first.", created: [] };
   var r;
@@ -230,13 +243,22 @@ MK.runTool = function (id, options) {
   return r;
 };
 
+// Runs tool `id`'s code inside another tool's or widget's run, with the same ctx (so one undo
+// step): its saved options with `options` on top. A widget reuses tools this way.
+MK.callTool = function (id, ctx, options) {
+  var tool = MK.tools[id];
+  return tool.run(ctx, MK.options.merged(tool, options));
+};
+
 // Every runnable entry, for the command box, the menu panel and the Add list:
-// [{id, name, category, description, kind: "tool" | "library"}]. `library` defaults to the stored one.
-MK.catalog = function (library) {
+// [{id, name, category, description, kind: "tool" | "widget" | "library"}]. `library` defaults
+// to the stored one. Widgets only with `widgets` (they live in panels, not in the menu).
+MK.catalog = function (library, widgets) {
   var out = [];
   for (var i = 0; i < MK.toolOrder.length; i++) {
     var t = MK.tools[MK.toolOrder[i]];
-    out.push({ id: t.id, name: t.name, category: t.category, description: t.description, kind: "tool" });
+    if (t.kind === "widget" && !widgets) continue;
+    out.push({ id: t.id, name: t.name, category: t.category, description: t.description, kind: t.kind });
   }
   var lib = library || (MK.library ? MK.library.list() : []);
   for (var j = 0; j < lib.length; j++) out.push({ id: lib[j].id, name: lib[j].name, category: "Library", description: MK.library.describe(lib[j]), kind: "library" });

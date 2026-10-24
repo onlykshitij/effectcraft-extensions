@@ -2,10 +2,15 @@
 // Motion Kit core: constants and small utilities every other file uses. build.py wraps all
 // sources in one function that declares `var MK = {}`; each file adds to MK.
 
-MK.version = "0.1.0";
+MK.version = "0.2.0";
 MK.NAME = "Motion Kit";
 MK.CATEGORIES = ["Animate", "Rig", "Shapes", "Comp"];
+// Category colours for what tools make (controls, traces, the curve editor). Panel buttons use
+// the style's accent instead.
 MK.ACCENTS = { Animate: "#F28C28", Rig: "#2BB3A3", Shapes: "#9B6BF2", Comp: "#3D8BF2", Library: "#9AA0A6" };
+// Fixed colours of the panel theme (the others are style fields): inner widget buttons, small
+// labels, and the anchor widget's squares and their inner border.
+MK.THEME = { button: "#3B5662", label: "#C9D3D6", anchor: "#A88BF7", anchorEdge: "#D9CCFF" };
 // Tool load problems (a bad registerTool call); the bundle keeps loading the other tools.
 MK.loadErrors = [];
 

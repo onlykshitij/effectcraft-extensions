@@ -27,23 +27,32 @@ MK.commandBox = (function () {
     return out;
   }
 
-  // Adds the box to `parent`. opts.after(result) runs after a tool ran.
+  // Adds the box to `parent`. opts.after(result) runs after a tool ran. With opts.width the box
+  // is exactly that wide: the field and the clear button, with the matches on a line below.
   function attach(parent, opts) {
     var o = opts || {};
-    var row = parent.add("group");
+    var box = parent.add("group");
+    box.orientation = "column";
+    box.alignChildren = ["left", "top"];
+    box.spacing = 2;
+    box.margins = 0;
+    var row = box.add("group");
     row.orientation = "row";
     row.alignChildren = ["left", "center"];
     row.spacing = 2;
+    row.margins = 0;
     var et = row.add("edittext", undefined, "");
     et.characters = 12;
     et.helpTip = "Find a tool: type words of its name, then press Enter to run the first match.";
-    var hint = row.add("statictext", undefined, "");
-    hint.preferredSize = [150, -1];
+    var hint = (o.width ? box : row).add("statictext", undefined, "");
+    hint.preferredSize = [o.width || 150, 16];
     hint.enabled = false;
+    hint.helpTip = "The matching tools; Enter runs the first";
     var clr = row.add("button", undefined, "×");
     clr.preferredSize = [22, 22];
     clr.helpTip = "Clear";
-    var C = { row: row, edit: et, hint: hint, clear: clr, matches: [] };
+    if (o.width) et.preferredSize = [Math.max(40, o.width - 24), 22];
+    var C = { box: box, row: row, edit: et, hint: hint, clear: clr, matches: [] };
     C.filter = function (text) {
       C.matches = search(text);
       var names = U.map(C.matches.slice(0, SHOWN), function (m) { return m.name; });

@@ -4,7 +4,8 @@
 //
 // An icon is an array of layers. A layer is a path string (stroked in the foreground colour) or
 // {d, stroke, fill, w, alpha}: stroke / fill are "fg", "accent" or a hex colour, w is the pen
-// width in design units (default 1.6). Path commands, absolute design units:
+// width in design units (default 2). Strokes get round joins and caps: ScriptUIGraphics has no
+// join style, so a dot is drawn on every corner and open end. Path commands, absolute design units:
 //   M x y, L x y, H x, V y, Q x1 y1 x y, C x1 y1 x2 y2 x y, Z
 //   A cx cy r a0 a1          arc, degrees, 0 = +x, clockwise on screen (joins the current point)
 //   O cx cy r                circle            E cx cy rx ry      ellipse
@@ -15,7 +16,7 @@
 
 MK.icons = (function () {
   var U = MK.util;
-  var CURVE_STEPS = 10;
+  var CURVE_STEPS = 10, PEN = 2, BEND_COS = Math.cos(30 * Math.PI / 180);
   var cache = {};
 
   var G = {};
@@ -107,8 +108,7 @@ MK.icons = (function () {
   function color(spec, fg, accent) {
     if (spec === "fg") return fg;
     if (spec === "accent") return accent;
-    var c = U.hexToRgb(spec);
-    return c ? [c[0], c[1], c[2], 1] : fg;
+    return U.normHex(spec) ? U.rgba(spec) : fg;
   }
 
   function withAlpha(c, a) { return a === undefined ? c : [c[0], c[1], c[2], c[3] * a]; }
@@ -121,6 +121,28 @@ MK.icons = (function () {
       for (var j = 1; j < pts.length; j++) g.lineTo(x + pts[j][0] * k, y + pts[j][1] * k);
       if (subs[i].closed) g.closePath();
     }
+  }
+
+  // Dots of diameter `w` px on the corners (turns over 30 degrees) and open ends of `subs`.
+  function joins(g, subs, x, y, k, w, col) {
+    var r = w / 2, any = false;
+    g.newPath();
+    for (var i = 0; i < subs.length; i++) {
+      var pts = subs[i].pts, n = pts.length, closed = subs[i].closed;
+      for (var j = 0; j < n; j++) {
+        var p = pts[j], dot = !closed && (j === 0 || j === n - 1);
+        if (!dot && n > 2) {
+          var a = pts[(j + n - 1) % n], b = pts[(j + 1) % n];
+          var ux = p[0] - a[0], uy = p[1] - a[1], vx = b[0] - p[0], vy = b[1] - p[1];
+          var len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+          dot = len > 1e-9 && (ux * vx + uy * vy) / len < BEND_COS;
+        }
+        if (!dot) continue;
+        g.ellipsePath(x + p[0] * k - r, y + p[1] * k - r, w, w);
+        any = true;
+      }
+    }
+    if (any) g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, col));
   }
 
   // Draws `icon` in the size x size square at (x, y). fg and accent are hex colours.
@@ -140,14 +162,29 @@ MK.icons = (function () {
         g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, withAlpha(color(L.fill, fg, accent), L.alpha)));
       }
       if (stroke) {
+        var col = withAlpha(color(stroke, fg, accent), L.alpha), w = Math.max(1, (L.w || PEN) * k);
         tracePath(g, subs, x, y, k);
-        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, withAlpha(color(stroke, fg, accent), L.alpha), Math.max(1, (L.w || 1.6) * k)));
+        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, col, w));
+        if (w >= 1.5) joins(g, subs, x, y, k, w, col);
       }
     }
   }
 
+  // A gear outline: eight flat teeth around the centre of the grid.
+  function gear() {
+    var pts = [];
+    var at = function (deg, r) { var a = deg * Math.PI / 180; return (12 + r * Math.cos(a)).toFixed(2) + " " + (12 + r * Math.sin(a)).toFixed(2); };
+    for (var i = 0; i < 8; i++) pts.push(at(i * 45 - 14, 6.9), at(i * 45 - 8, 9.6), at(i * 45 + 8, 9.6), at(i * 45 + 14, 6.9));
+    return "M" + pts.join(" L") + " Z";
+  }
+
   // Built-in icons that aren't tools.
   var BUILTIN = {
+    // The panel header and edit mode: pencil (edit mode), gear (Layout & Style), remove, add.
+    pencil: ["M4.5 19.5 L5.6 15 L15.4 5.2 Q16.6 4 17.8 5.2 L18.8 6.2 Q20 7.4 18.8 8.6 L9 18.4 Z", "M13.6 7 L17 10.4"],
+    gear: [gear(), "O12 12 3"],
+    close: ["M7 7 L17 17 M17 7 L7 17"],
+    plus: ["M12 5 V19 M5 12 H19"],
     // A magnifier (the lens).
     command: [{ d: "O10 10 5.5", stroke: "accent", w: 2 }, { d: "M14.2 14.2 L20 20", w: 2.4 }],
     // {} braces (the dot).

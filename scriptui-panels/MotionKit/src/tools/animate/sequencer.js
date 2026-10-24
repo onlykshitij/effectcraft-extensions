@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Sequencer: staggers the selected layers (their start times) or the selected keyframes of each
 // layer (moved together, spacing kept). Items are put in order (top to bottom, bottom to top,
-// seeded random, or selection order); with n items the span is step * (n - 1) frames and item i
-// sits span * curve(i / (n - 1)) frames, rounded to whole frames, after the first one, which
-// keeps its time. A layer's time is its in-point; a keyframe item's time is its earliest
-// selected keyframe.
+// from the centre, seeded random, or selection order). Item k of the order is in step group
+// g = floor(k / group) ("group" items share each step); from the centre, k is the distance from
+// the middle item(s) instead, so both sides move alike. With G the last group, the span is
+// step * G frames and group g sits span * curve(g / G) frames, rounded to whole frames, after
+// group 0 (linear: step * g). Group 0 takes the time of the first item in the order, or from
+// the centre of the middle item (the first of the two when the count is even). A layer's time
+// is its in-point; a keyframe item's time is its earliest selected keyframe.
 
 (function () {
   var NAME = "Sequencer", U = MK.util, A = MK.anim;
@@ -14,7 +17,18 @@
     easeOut: function (t) { return 1 - (1 - t) * (1 - t); },
     easeInOut: function (t) { return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); }
   };
-  var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", random: "random", selection: "selection order" };
+  var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", centre: "from the centre", random: "random", selection: "selection order" };
+
+  // The step group of each of n items in order: floor(k / group), with k the distance from the
+  // middle for the centre order (two middle items when n is even).
+  function groups(n, group, centre) {
+    var out = [];
+    for (var k = 0; k < n; k++) {
+      var d = !centre ? k : k < n / 2 ? Math.floor((n - 1) / 2) - k : k - Math.ceil((n - 1) / 2);
+      out.push(Math.floor(d / group));
+    }
+    return out;
+  }
 
   // Fisher-Yates with the Park-Miller generator (exact in doubles), so a seed always gives the
   // same order.
@@ -60,14 +74,14 @@
     description: "Staggers the selected layers, or each layer's selected keyframes, a few frames apart.",
     // Four staggered horizontal bars (the first bar).
     icon: [
-      { d: "U2 3.5 9 3 1", fill: "accent" },
-      "U6 8.5 9 3 1",
-      "U10 13.5 9 3 1",
-      "U13 18.5 9 3 1"
+      { d: "M3.5 5 H10.5", stroke: "accent", w: 3 },
+      { d: "M7.5 10 H14.5", w: 3 },
+      { d: "M11.5 15 H18.5", w: 3 },
+      { d: "M14 20 H21", w: 3 }
     ],
     options: [
       { key: "mode", label: "Mode", type: "dropdown", "default": "layers", items: [["layers", "Layers: move their start times"], ["keys", "Keyframes: move each layer's selected keys"]] },
-      { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["random", "Random"], ["selection", "Selection order"]] },
+      { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["centre", "From the centre"], ["random", "Random"], ["selection", "Selection order"]] },
       {
         key: "seed", label: "Random seed", type: "custom", "default": 1, build: seedField,
         validate: function (v) {
@@ -77,6 +91,7 @@
         }
       },
       { key: "step", label: "Step", type: "number", "default": 2, min: -1000, max: 1000, unit: "frames", help: "Frames between items, negative or fractional too; the result is rounded to whole frames" },
+      { key: "group", label: "Items per step", type: "number", "default": 1, min: 1, max: 1000, integer: true, help: "How many items in a row share each step" },
       { key: "curve", label: "Curve", type: "dropdown", "default": "linear", items: [["linear", "Linear"], ["easeIn", "Ease in"], ["easeOut", "Ease out"], ["easeInOut", "Ease in-out"]] }
     ],
     run: function (ctx, o) {
@@ -86,16 +101,18 @@
       if (o.order !== "selection") list.sort(function (x, y) { return x.layer.index - y.layer.index; });
       if (o.order === "bottomUp") list.reverse();
       if (o.order === "random") list = shuffle(list, o.seed);
-      var n = list.length, span = o.step * (n - 1), base = list[0].time, curve = CURVES[o.curve], moved = 0;
-      for (var i = 1; i < n; i++) {
-        var it = list[i], delta = base + Math.round(span * curve(i / (n - 1))) * ctx.frame - it.time;
+      var n = list.length, g = groups(n, o.group, o.order === "centre"), last = Math.max.apply(null, g);
+      var base = list[o.order === "centre" ? Math.floor((n - 1) / 2) : 0].time, curve = CURVES[o.curve], moved = 0;
+      for (var i = 0; i < n; i++) {
+        var it = list[i], delta = base + (last ? Math.round(o.step * last * curve(g[i] / last)) : 0) * ctx.frame - it.time;
         if (Math.abs(delta) < 1e-9) continue;
         if (keys) {
           for (var q = 0; q < it.props.length; q++) A.move(it.props[q], MK.sel.selectedKeys(it.props[q]), function (k) { return k.time + delta; });
         } else it.layer.startTime = it.layer.startTime + delta;
         moved++;
       }
-      return ctx.done(NAME + ": placed " + n + (keys ? " layers' keyframes" : " layers") + " " + ORDER_TEXT[o.order] + ", " + o.step + " frames apart (" + o.curve + "); moved " + moved + ".");
+      return ctx.done(NAME + ": placed " + n + (keys ? " layers' keyframes" : " layers") + " " + ORDER_TEXT[o.order] + ", " + o.step + " frames apart" +
+        (o.group > 1 ? ", " + o.group + " per step" : "") + " (" + o.curve + "); moved " + moved + ".");
     }
   });
 })();

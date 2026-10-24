@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// UI smoke test: the five dist panels build, every default tool has a button, buttons draw,
-// mouse input (click, Shift-click, right-click, hover, drag reorder, a drop outside the grid)
-// through EffectCraft's ScriptUI event routing, rev polling, the command box, the options
-// dialog, the Layout & Style dialog (all tabs) and the icon renderer.
+// UI smoke test: the six dist panels build, every default item has a cell, buttons draw icon
+// only, mouse input (click, Shift-click, right-click, hover, drag reorder in edit mode, a drop
+// outside the grid) through EffectCraft's ScriptUI event routing, rev polling, the command box,
+// the options dialog, the Layout & Style dialog (all tabs) and the icon renderer.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var L = MotionKit.layout, U = MotionKit.helpers.util;
 var opened = [], dialogs = [];
@@ -13,34 +13,36 @@ function cellIds(P) { return U.map(P.cells, function (c) { return c.mkId; }).joi
 
 // ---- the dist panels build, each with a button per default tool
 var wins = [];
-for (var n = 1; n <= 4; n++) {
-  var w = $.evalFile(MKT_DIR + "/dist/Motion Kit " + n + ".jsx");
-  T.check(w instanceof Window && w.mkPanel && w.mkPanel.index === n - 1, "Motion Kit " + n + ".jsx opens a palette for panel " + n);
+for (var n = 1; n <= 5; n++) {
+  var file = n === 5 ? "Motion Kit.jsx" : "Motion Kit " + n + ".jsx";
+  var w = $.evalFile(MKT_DIR + "/dist/" + file);
+  T.check(w instanceof Window && w.mkPanel && w.mkPanel.index === n - 1, file + " opens a palette for panel " + n + " (" + w.text + ")");
   wins.push(w);
 }
 var def = L.defaultLayout();
-for (var p = 0; p < 4; p++) {
+for (var p = 0; p < 5; p++) {
   var P = wins[p].mkPanel, want = U.map(def.panels[p].items, function (x) { return x.id; }).join(",");
   T.check(cellIds(P) === want, "panel " + (p + 1) + " has a button for every default tool: " + want);
 }
 var P1 = wins[0].mkPanel, P2 = wins[1].mkPanel;
-T.check(P1.title.text === "Animate" && P1.layoutList && P1.gear && P1.commandBox, "panel 1 header: title, layout list, ⚙, command box");
+T.check(P1.title.text === "Animate" && P1.layoutList && P1.pencil && P1.gear && P1.commandBox, "panel 1 header: title, layout list, ✎, ⚙, command box");
 T.check(!P2.commandBox, "panel 2 has no command box by default");
 
-// Every button draws: background, icon and name (onDraw runs when the host takes a snapshot).
+// Every button draws its background and icon and no name: the name is in the help tip (onDraw
+// runs when the host takes a snapshot).
 __uiSnapshot();
-var drawn = true, texts = true;
+var drawn = true, texts = false, iconButtons = true;
 for (var q = 0; q < 4; q++) {
   var cells = wins[q].mkPanel.cells;
   for (var c = 0; c < cells.length; c++) {
     var ops = cells[c].__draw || [];
     if (ops.length < 3) drawn = false;
-    var hasText = false;
-    for (var o = 0; o < ops.length; o++) if (ops[o].op === "text" && ops[o].text) hasText = true;
-    if (!hasText) texts = false;
+    if (cells[c].type !== "iconbutton") iconButtons = false;
+    for (var o = 0; o < ops.length; o++) if (ops[o].op === "text" && ops[o].text) texts = true;
   }
 }
-T.check(drawn && texts, "every button draws a background, an icon and its name");
+T.check(drawn && !texts, "every button draws a background and an icon, without a name");
+T.check(iconButtons, "every tool button is a custom-drawn iconbutton (so EffectCraft shows its help tip)");
 var look = MotionKit.ui.look({ id: "futureTool" }, def.panels[0].style);
 T.check(look.missing && look.fg === "#8A8A8A" && look.icon === MotionKit.helpers.icons.builtin.missing, "a tool that isn't installed draws as the grey \"?\" button");
 T.check(/not available/i.test(MotionKit.describe("futureTool").description) && /Shift-click/.test(P1.cells[0].helpTip), "help tips: description, options hint, missing explanation");
@@ -62,9 +64,9 @@ T.check($.evalFile(MKT_DIR + "/dist/motionkit-lib.jsx") === null, "motionkit-lib
 // ---- mouse input on panel 1
 var W1 = wins[0], cw = P1.sz.w, ch = P1.sz.h, sp = P1.sp;
 T.check(P1.cols === 4, "panel 1 lays out the style's " + P1.cols + " columns of " + cw + " x " + ch + " px");
-// Every button drawn, no row wider than the column count (a drop once laid out 6 per row).
+// Every button drawn, none outside the column count (a drop once laid out 6 per row).
 function rowsFit(P) {
-  for (var r = 0; r < P.grid.children.length; r++) if (P.grid.children[r].children.length > P.cols) return false;
+  for (var r = 0; r < P.cells.length; r++) if (P.cells[r].mkGX + P.sz.w > P.cols * (P.sz.w + P.sp)) return false;
   return P.cells.length === P.items().length;
 }
 T.mouse(W1, P1.cells[1], "mousemove", 5, 5);
@@ -72,6 +74,15 @@ T.check(P1.hover === 1, "hover tracks the button under the pointer");
 T.mouse(W1, P1.cells[1], "mouseout", 5, 5);
 T.check(P1.hover === -1, "mouseout clears the hover");
 
+// Out of edit mode a drag doesn't reorder (a slider drag must never move a cell).
+var unedited = order(0);
+T.mouse(W1, P1.cells[0], "mousedown", 10, 10);
+T.mouse(W1, P1.cells[1], "mousemove", 10, 10);
+T.mouse(W1, P1.cells[2], "mousemove", cw - 3, 10);
+T.mouse(W1, P1.cells[2], "mouseup", cw - 3, 10);
+T.check(order(0) === unedited && !P1.drag, "without edit mode, dragging doesn't reorder");
+T.mouse(W1, P1.pencil, "click", 5, 5);
+T.check(P1.editing, "the pencil turns edit mode on");
 // Drag bounce (0) to after loop (2): press on it, move over elastic, release near loop's right edge.
 T.mouse(W1, P1.cells[0], "mousedown", 10, 10);
 T.mouse(W1, P1.cells[1], "mousemove", 10, 10);
@@ -98,6 +109,8 @@ T.mouse(W1, P1.cells[0], "mousedown", 10, 10);
 T.mouse(W1, P1.cells[1], "mousemove", 10, 10);
 T.mouse(W1, P1.title, "mouseup", 5, 5);
 T.check(order(0) === before && P1.drag === null, "releasing outside the grid cancels the drag");
+T.mouse(W1, P1.pencil, "click", 5, 5);
+T.check(!P1.editing, "the pencil turns edit mode off again");
 
 // Click (a move of 4 px or less) runs; Shift-click and right-click open options.
 T.alerts = [];
@@ -133,7 +146,7 @@ T.check(P2.rev !== MotionKit.settings.rev(), "panel 2 is behind after another pa
 T.check(MotionKit.__tick(P2.key) && cellIds(P2) === "parentNull,nullsPoints,sliderToPath,positionTrace,moveAnchor,limb", "its poll task rebuilds it");
 L.save(L.setStyle(L.get(), 1, { hideTitle: true, buttonMode: "icon", cellSize: 30 }));
 MotionKit.__tick(P2.key);
-T.check(wins[1].children[0].mkRole === "grid" && P2.sz.w === 30 && P2.sz.h === 30, "hideTitle drops the title row; icon mode cells are cellSize square");
+T.check(P2.body.children[0] === P2.grid && !P2.header && P2.sz.w === 30 && P2.sz.h === 30, "hideTitle drops the title row; icon mode cells are cellSize square");
 L.add("Alt", "empty");
 MotionKit.__tick(P1.key);
 T.check(P1.cells.length === 0 && P1.layoutList.selection.text === "Alt", "switching layouts elsewhere: the panel follows (empty layout)");
@@ -204,7 +217,7 @@ T.check(od.inputs.amplitude.control.text === "0.7" && od.inputs.jumpInOut.contro
 var stored = JSON.stringify(L.state());
 var LD = MotionKit.layoutDialog, RH = LD.ROW_H;
 var D = LD.build(0);
-T.check(D.tabs.children.length === 5 && D.lists.length === 4 && D.titles[0].text === "1. Animate", "five tabs; four columns titled by panel");
+T.check(D.tabs.children.length === 5 && D.lists.length === 5 && D.titles[0].text === "1. Animate" && D.titles[4].text === "5. Motion Kit", "five tabs; five columns titled by panel");
 T.mouse(D.win, D.lists[0], "mousedown", 20, RH + 5);
 T.mouse(D.win, D.lists[0], "mouseup", 20, RH + 5);
 T.check(D.panel === 0 && D.sel === 1 && D.btnUp.enabled && D.btnRemove.enabled, "clicking a row selects it");
@@ -224,7 +237,7 @@ T.check(D.pc(2).items[1].id === "elastic" && D.panel === 2 && D.sel === 1, "drop
 D.btnRemove.notify("onClick");
 T.check(MotionKit.layout.findId(D.pc(2).items, "elastic") < 0, "Remove takes it out");
 var at = U.indexOf(D.addIds, "elastic");
-T.check(at >= 0 && U.indexOf(D.addIds, "extractShapes") < 0, "Add lists tools not yet in the panel");
+T.check(at >= 0 && U.indexOf(D.addIds, "extractShapes") < 0 && U.indexOf(D.addIds, "ease") >= 0, "Add lists tools and widgets not yet in the panel");
 D.addList.selection = at;
 D.btnAdd.notify("onClick");
 T.check(D.pc(2).items[D.sel].id === "elastic", "Add puts it after the selection");
@@ -256,7 +269,12 @@ var s2 = D.pc(2).style;
 T.check(s2.buttonMode === "icon" && s2.hideTitle && s2.showCommandBox, "Style: button mode, hide title, command box");
 D.stylePanel.selection = 0;
 D.stylePanel.notify("onChange");
-T.check(D.panel === 0 && D.styleCell.text === "44", "Style: the panel list switches which panel is edited");
+T.check(D.panel === 0 && D.styleCell.text === "56", "Style: the panel list switches which panel is edited");
+D.styleAccent.edit.text = "#00ccff";
+D.styleAccent.edit.notify("onChange");
+D.styleRadius.text = "12";
+D.styleRadius.notify("onChange");
+T.check(D.pc(0).style.accent === "#00CCFF" && D.pc(0).style.radius === 12, "Style: accent colour and corner radius");
 
 // Button tab.
 T.mouse(D.win, D.lists[0], "mousedown", 20, 5);
@@ -343,6 +361,7 @@ function recorder() {
   var g = { ops: [], pts: [], BrushType: { SOLID_COLOR: 0 }, PenType: { SOLID_COLOR: 0 } };
   g.newPath = function () {};
   g.moveTo = g.lineTo = function (x, y) { g.pts.push([x, y]); };
+  g.ellipsePath = function (x, y, w, h) { g.pts.push([x, y], [x + w, y + h]); };
   g.closePath = function () {};
   g.newPen = g.newBrush = function (t, c, w) { return { c: c, w: w }; };
   g.fillPath = function () { g.ops.push("fill"); };

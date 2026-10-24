@@ -10,10 +10,15 @@ var MK = {};
 // Motion Kit core: constants and small utilities every other file uses. build.py wraps all
 // sources in one function that declares `var MK = {}`; each file adds to MK.
 
-MK.version = "0.1.0";
+MK.version = "0.2.0";
 MK.NAME = "Motion Kit";
 MK.CATEGORIES = ["Animate", "Rig", "Shapes", "Comp"];
+// Category colours for what tools make (controls, traces, the curve editor). Panel buttons use
+// the style's accent instead.
 MK.ACCENTS = { Animate: "#F28C28", Rig: "#2BB3A3", Shapes: "#9B6BF2", Comp: "#3D8BF2", Library: "#9AA0A6" };
+// Fixed colours of the panel theme (the others are style fields): inner widget buttons, small
+// labels, and the anchor widget's squares and their inner border.
+MK.THEME = { button: "#3B5662", label: "#C9D3D6", anchor: "#A88BF7", anchorEdge: "#D9CCFF" };
 // Tool load problems (a bad registerTool call); the bundle keeps loading the other tools.
 MK.loadErrors = [];
 
@@ -177,16 +182,17 @@ MK.settings = (function () {
 })();
 
 // ---- src/core/20_layout.js
-// The layout model. A Layout is {panels: [PanelCfg x 4]}; PanelCfg is {title, style, items};
+// The layout model. A Layout is {panels: [PanelCfg x 5]}; PanelCfg is {title, style, items};
 // an item is {id, name?, showIcon?, showName?, bg?, accent?, fg?}. Panel and item indices are
-// 0-based. The operations are pure: they validate their input and return a new Layout.
+// 0-based; panel 5 (index 4) is the combined "Motion Kit" panel. The operations are pure: they
+// validate their input and return a new Layout.
 // Named layouts live in settings (layouts, activeLayout) with the user library; the `ops`
 // functions work on a state object {layouts, active, library} so the Layout & Style dialog
-// can edit a copy and save it on OK.
+// can edit a copy and save it on OK. pack() places items with spans on the panel grid.
 
 MK.layout = (function () {
   var U = MK.util;
-  var N_PANELS = 4;
+  var N_PANELS = 5;
   var MODES = ["icon", "name", "iconName"];
   var DEFAULT_PANELS = [
     ["Animate", ["bounce", "elastic", "loop", "easeKeys", "easeCopy", "sequencer", "cloneKeys", "fixKeys"]],
@@ -194,14 +200,22 @@ MK.layout = (function () {
     ["Shapes", ["extractShapes", "mergeShapes", "selector", "strokeStyle", "shapesFromVector", "collectColors"]],
     ["Comp", ["cropComp", "unprecomp", "duplicateComp", "gifExport"]]
   ];
+  // Panel 5: the widgets, then every tool of panels 1-4 except the two the widgets replace
+  // (Key Copy/Paste covers easeCopy, Anchor covers moveAnchor).
+  DEFAULT_PANELS.push(["Motion Kit", ["ease", "keyCopyPaste", "interpolation", "anchor", "sequencerWidget"].concat(U.filter(
+    [].concat(DEFAULT_PANELS[0][1], DEFAULT_PANELS[1][1], DEFAULT_PANELS[2][1], DEFAULT_PANELS[3][1]),
+    function (id) { return id !== "easeCopy" && id !== "moveAnchor"; }))]);
   var ITEM_COLORS = ["bg", "accent", "fg"];
 
   function defaultStyle(p) {
     return {
-      cellSize: 44, spacing: 4, columns: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null,
-      buttonMode: "iconName", hideTitle: false, fg: "#D8D8D8", showCommandBox: p === 0
+      cellSize: 56, spacing: 10, columns: 4, panelBg: "#0D1B21", cellBg: "#0D1B21", cellBorder: "#2A3B42",
+      buttonMode: "icon", hideTitle: false, fg: "#FFFFFF", accent: "#F27A7A", radius: 6, showCommandBox: p === 0
     };
   }
+  // Motion Kit 0.1 (four panels) saved every style key; the values it used as defaults become
+  // this version's defaults when such a layout loads. Values a user changed are kept.
+  var V1_STYLE = { cellSize: 44, spacing: 4, panelBg: null, cellBg: "#2B2B2B", cellBorder: null, buttonMode: "iconName", fg: "#D8D8D8" };
 
   // One rule per style key: the valid form of `v`, or undefined to keep the fallback.
   var STYLE_RULES = {
@@ -214,6 +228,8 @@ MK.layout = (function () {
     buttonMode: function (v) { return U.indexOf(MODES, v) >= 0 ? v : undefined; },
     hideTitle: function (v) { return typeof v === "boolean" ? v : undefined; },
     fg: function (v) { return U.normHex(v) || undefined; },
+    accent: function (v) { return U.normHex(v) || undefined; },
+    radius: function (v) { return U.isNum(v) ? U.clamp(Math.round(v), 0, 16) : undefined; },
     showCommandBox: function (v) { return typeof v === "boolean" ? v : undefined; }
   };
 
@@ -255,8 +271,10 @@ MK.layout = (function () {
     return out;
   }
 
-  function normPanel(pc, p) {
+  // v1 is true for a layout saved by Motion Kit 0.1 (exactly four panels).
+  function normPanel(pc, p, v1) {
     var o = pc && typeof pc === "object" ? pc : {};
+    if (v1 && p >= 4) return defaultPanel(p);
     var items = [], seen = {};
     var list = U.isArray(o.items) ? o.items : [];
     for (var i = 0; i < list.length; i++) {
@@ -266,22 +284,26 @@ MK.layout = (function () {
         items.push(it);
       }
     }
-    return { title: normText(o.title, 64) || "Panel " + (p + 1), style: applyStyle(defaultStyle(p), o.style), items: items };
+    var style = o.style && typeof o.style === "object" ? U.clone(o.style) : {};
+    if (v1) for (var k in V1_STYLE) if (U.has(V1_STYLE, k) && style[k] === V1_STYLE[k]) delete style[k];
+    return { title: normText(o.title, 64) || "Panel " + (p + 1), style: applyStyle(defaultStyle(p), style), items: items };
+  }
+
+  function defaultPanel(p) {
+    return { title: DEFAULT_PANELS[p][0], style: defaultStyle(p), items: U.map(DEFAULT_PANELS[p][1], function (id) { return { id: id }; }) };
   }
 
   // Any value -> a valid Layout (a fresh object; the input is never changed).
   function normalize(l) {
     var src = l && typeof l === "object" && U.isArray(l.panels) ? l.panels : [];
     var panels = [];
-    for (var p = 0; p < N_PANELS; p++) panels.push(normPanel(src[p], p));
+    for (var p = 0; p < N_PANELS; p++) panels.push(normPanel(src[p], p, src.length === 4));
     return { panels: panels };
   }
 
   function defaultLayout() {
     var panels = [];
-    for (var p = 0; p < N_PANELS; p++) {
-      panels.push({ title: DEFAULT_PANELS[p][0], style: defaultStyle(p), items: U.map(DEFAULT_PANELS[p][1], function (id) { return { id: id }; }) });
-    }
+    for (var p = 0; p < N_PANELS; p++) panels.push(defaultPanel(p));
     return { panels: panels };
   }
 
@@ -301,6 +323,39 @@ MK.layout = (function () {
   function itemIndex(items, i) {
     if (!(i === Math.floor(i) && i >= 0 && i < items.length)) MK.fail("There is no button " + i + " in that panel.");
     return i;
+  }
+
+  // First-fit packing for the panel grid: spans [[cols, rows], ...] in item order go into a grid
+  // `columns` wide, each at the first free area scanning row by row, so later 1 x 1 items fill
+  // the holes beside bigger ones. Widths are clamped to the column count. The grid uses only
+  // as many columns as the items' widths add up to. Returns {cols, rows, at: [[col, row]...],
+  // spans: [[cols, rows]...]} (the clamped spans).
+  function pack(spans, columns) {
+    var max = Math.max(1, Math.round(columns) || 1), list = [], total = 0, i;
+    for (i = 0; i < spans.length; i++) {
+      var s = U.isArray(spans[i]) ? spans[i] : [1, 1];
+      var w = U.clamp(Math.round(s[0]) || 1, 1, max), h = Math.max(1, Math.round(s[1]) || 1);
+      list.push([w, h]);
+      total += w;
+    }
+    var cols = Math.min(max, total), busy = {}, at = [], rows = 0;
+    function free(c, r, w, h) {
+      for (var y = r; y < r + h; y++) for (var x = c; x < c + w; x++) if (busy[y + ":" + x]) return false;
+      return true;
+    }
+    for (i = 0; i < list.length; i++) {
+      var sw = list[i][0], sh = list[i][1], done = false;
+      for (var r = 0; !done; r++) {
+        for (var c = 0; c + sw <= cols && !done; c++) {
+          if (!free(c, r, sw, sh)) continue;
+          for (var y = r; y < r + sh; y++) for (var x = c; x < c + sw; x++) busy[y + ":" + x] = true;
+          at.push([c, r]);
+          rows = Math.max(rows, r + sh);
+          done = true;
+        }
+      }
+    }
+    return { cols: cols, rows: rows, at: at, spans: list };
   }
 
   function findId(items, id) {
@@ -412,7 +467,7 @@ MK.layout = (function () {
   }
 
   var ops = {
-    // mode "empty" (four empty panels) or "duplicate" (a copy of the active layout). The new
+    // mode "empty" (five empty panels) or "duplicate" (a copy of the active layout). The new
     // layout becomes the active one.
     add: function (state, name, mode) {
       var st = normState(state), n = freshName(st, name);
@@ -583,6 +638,7 @@ MK.layout = (function () {
     emptyLayout: emptyLayout,
     defaultIds: defaultIds,
     normalize: normalize,
+    pack: pack,
     normItem: normItem,
     findId: findId,
     moveItem: moveItem,
@@ -1050,6 +1106,14 @@ MK.keys = (function () {
     }
     return ks.length;
   };
+  // Sets both interpolation types of key i when the property takes them; false when it can't.
+  // Only the types change: EffectCraft keeps a key's temporal ease while it is Linear or Hold,
+  // so switching back to Bezier brings the ease back (setTemporalEaseAtKey would overwrite it).
+  K.setInterp = function (prop, i, inType, outType) {
+    if (!prop.isInterpolationTypeValid(inType) || !prop.isInterpolationTypeValid(outType)) return false;
+    prop.setInterpolationTypeAtKey(i, inType, outType);
+    return true;
+  };
   // Removes keys by 1-based index (any order).
   K.remove = function (prop, indices) {
     var a = indices.slice();
@@ -1337,7 +1401,8 @@ MK.rig = (function () {
 // ---- src/core/40_registry.js
 // The tool registry, tool options and the runner. A tool file calls MK.registerTool({...});
 // MK.run(id, options) runs it on the active comp and selection, in one undo step, and always
-// returns {ok, message, created}. Nothing a tool throws gets past the runner.
+// returns {ok, message, created}. Nothing a tool throws gets past the runner. Widgets (kind
+// "widget": a bigger cell with its own controls) are registry entries too and run the same way.
 
 MK.tools = {};
 MK.toolOrder = [];
@@ -1460,6 +1525,12 @@ MK.options = (function () {
     return { ok: true, values: r.values, errors: [] };
   };
   O.has = function (tool) { return !!((tool.options && tool.options.length) || tool.openOptions); };
+  // The saved options with `given` on top (not saved), validated leniently.
+  O.merged = function (tool, given) {
+    var o = O.get(tool), g = given && typeof given === "object" ? given : {};
+    for (var k in g) if (U.has(g, k)) o[k] = g[k];
+    return O.validate(tool, o, false).values;
+  };
   return O;
 })();
 
@@ -1468,7 +1539,10 @@ MK.options = (function () {
 // Registers a tool. Required: id, name, category (Animate, Rig, Shapes or Comp), description
 // (one line), icon (a path DSL array or draw function, see 50_icons.js) and run(ctx, opts).
 // Optional: options (field list), needsComp (default true), dot() (true shows an accent dot on
-// the button), openOptions() (replaces the generated options dialog).
+// the button), openOptions() (replaces the generated options dialog), api (functions other
+// tools and widgets reuse, as MK.tools[id].api).
+// A widget also has kind: "widget", span: [cols, rows] and build(w), which adds its controls to
+// the panel cell through the widget API `w` (70_panel.js).
 // A bad definition is recorded in MK.loadErrors and skipped, so the other tools still load.
 MK.registerTool = function (def) {
   var errs = [], U = MK.util;
@@ -1480,6 +1554,10 @@ MK.registerTool = function (def) {
   if (typeof d.description !== "string" || !U.trim(d.description)) errs.push("description is missing");
   if (typeof d.run !== "function") errs.push("run(ctx, opts) is missing");
   if (!(typeof d.icon === "function" || U.isArray(d.icon))) errs.push("icon is missing");
+  var widget = d.kind === "widget";
+  if (d.kind !== undefined && d.kind !== "tool" && !widget) errs.push("kind must be \"tool\" or \"widget\"");
+  if (widget && typeof d.build !== "function") errs.push("a widget needs build(w)");
+  if (widget && !(U.isArray(d.span) && d.span.length === 2 && U.isNum(d.span[0]) && U.isNum(d.span[1]) && d.span[0] >= 1 && d.span[1] >= 1)) errs.push("a widget needs span [cols, rows]");
   errs = errs.concat(MK.options.schemaErrors(d.options || []));
   if (errs.length) {
     var msg = "Motion Kit: tool " + (d.id || "?") + " not loaded: " + errs.join("; ");
@@ -1490,7 +1568,8 @@ MK.registerTool = function (def) {
   var tool = {
     id: d.id, name: d.name, category: d.category, description: d.description, icon: d.icon,
     options: d.options || [], run: d.run, needsComp: d.needsComp !== false, dot: d.dot || null,
-    openOptions: d.openOptions || null
+    openOptions: d.openOptions || null, api: d.api || {},
+    kind: widget ? "widget" : "tool", span: widget ? [Math.round(d.span[0]), Math.round(d.span[1])] : [1, 1], build: widget ? d.build : null
   };
   MK.tools[tool.id] = tool;
   MK.toolOrder.push(tool.id);
@@ -1549,9 +1628,7 @@ MK.run = function (id, options, quiet) {
 MK.runTool = function (id, options) {
   var tool = MK.tools[id];
   if (!tool) return { ok: false, message: "\"" + id + "\" isn't a tool in this version of Motion Kit (" + MK.version + ").", created: [] };
-  var saved = MK.options.get(tool), given = options && typeof options === "object" ? options : {};
-  for (var k in given) if (MK.util.has(given, k)) saved[k] = given[k];
-  var opts = MK.options.validate(tool, saved, false).values;
+  var opts = MK.options.merged(tool, options);
   var ctx = MK.makeContext(tool);
   if (tool.needsComp && !ctx.comp) return { ok: false, message: tool.name + ": open a composition first.", created: [] };
   var r;
@@ -1566,13 +1643,22 @@ MK.runTool = function (id, options) {
   return r;
 };
 
+// Runs tool `id`'s code inside another tool's or widget's run, with the same ctx (so one undo
+// step): its saved options with `options` on top. A widget reuses tools this way.
+MK.callTool = function (id, ctx, options) {
+  var tool = MK.tools[id];
+  return tool.run(ctx, MK.options.merged(tool, options));
+};
+
 // Every runnable entry, for the command box, the menu panel and the Add list:
-// [{id, name, category, description, kind: "tool" | "library"}]. `library` defaults to the stored one.
-MK.catalog = function (library) {
+// [{id, name, category, description, kind: "tool" | "widget" | "library"}]. `library` defaults
+// to the stored one. Widgets only with `widgets` (they live in panels, not in the menu).
+MK.catalog = function (library, widgets) {
   var out = [];
   for (var i = 0; i < MK.toolOrder.length; i++) {
     var t = MK.tools[MK.toolOrder[i]];
-    out.push({ id: t.id, name: t.name, category: t.category, description: t.description, kind: "tool" });
+    if (t.kind === "widget" && !widgets) continue;
+    out.push({ id: t.id, name: t.name, category: t.category, description: t.description, kind: t.kind });
   }
   var lib = library || (MK.library ? MK.library.list() : []);
   for (var j = 0; j < lib.length; j++) out.push({ id: lib[j].id, name: lib[j].name, category: "Library", description: MK.library.describe(lib[j]), kind: "library" });
@@ -1596,7 +1682,8 @@ MK.describe = function (id, library) {
 //
 // An icon is an array of layers. A layer is a path string (stroked in the foreground colour) or
 // {d, stroke, fill, w, alpha}: stroke / fill are "fg", "accent" or a hex colour, w is the pen
-// width in design units (default 1.6). Path commands, absolute design units:
+// width in design units (default 2). Strokes get round joins and caps: ScriptUIGraphics has no
+// join style, so a dot is drawn on every corner and open end. Path commands, absolute design units:
 //   M x y, L x y, H x, V y, Q x1 y1 x y, C x1 y1 x2 y2 x y, Z
 //   A cx cy r a0 a1          arc, degrees, 0 = +x, clockwise on screen (joins the current point)
 //   O cx cy r                circle            E cx cy rx ry      ellipse
@@ -1607,7 +1694,7 @@ MK.describe = function (id, library) {
 
 MK.icons = (function () {
   var U = MK.util;
-  var CURVE_STEPS = 10;
+  var CURVE_STEPS = 10, PEN = 2, BEND_COS = Math.cos(30 * Math.PI / 180);
   var cache = {};
 
   var G = {};
@@ -1699,8 +1786,7 @@ MK.icons = (function () {
   function color(spec, fg, accent) {
     if (spec === "fg") return fg;
     if (spec === "accent") return accent;
-    var c = U.hexToRgb(spec);
-    return c ? [c[0], c[1], c[2], 1] : fg;
+    return U.normHex(spec) ? U.rgba(spec) : fg;
   }
 
   function withAlpha(c, a) { return a === undefined ? c : [c[0], c[1], c[2], c[3] * a]; }
@@ -1713,6 +1799,28 @@ MK.icons = (function () {
       for (var j = 1; j < pts.length; j++) g.lineTo(x + pts[j][0] * k, y + pts[j][1] * k);
       if (subs[i].closed) g.closePath();
     }
+  }
+
+  // Dots of diameter `w` px on the corners (turns over 30 degrees) and open ends of `subs`.
+  function joins(g, subs, x, y, k, w, col) {
+    var r = w / 2, any = false;
+    g.newPath();
+    for (var i = 0; i < subs.length; i++) {
+      var pts = subs[i].pts, n = pts.length, closed = subs[i].closed;
+      for (var j = 0; j < n; j++) {
+        var p = pts[j], dot = !closed && (j === 0 || j === n - 1);
+        if (!dot && n > 2) {
+          var a = pts[(j + n - 1) % n], b = pts[(j + 1) % n];
+          var ux = p[0] - a[0], uy = p[1] - a[1], vx = b[0] - p[0], vy = b[1] - p[1];
+          var len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
+          dot = len > 1e-9 && (ux * vx + uy * vy) / len < BEND_COS;
+        }
+        if (!dot) continue;
+        g.ellipsePath(x + p[0] * k - r, y + p[1] * k - r, w, w);
+        any = true;
+      }
+    }
+    if (any) g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, col));
   }
 
   // Draws `icon` in the size x size square at (x, y). fg and accent are hex colours.
@@ -1732,14 +1840,29 @@ MK.icons = (function () {
         g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, withAlpha(color(L.fill, fg, accent), L.alpha)));
       }
       if (stroke) {
+        var col = withAlpha(color(stroke, fg, accent), L.alpha), w = Math.max(1, (L.w || PEN) * k);
         tracePath(g, subs, x, y, k);
-        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, withAlpha(color(stroke, fg, accent), L.alpha), Math.max(1, (L.w || 1.6) * k)));
+        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, col, w));
+        if (w >= 1.5) joins(g, subs, x, y, k, w, col);
       }
     }
   }
 
+  // A gear outline: eight flat teeth around the centre of the grid.
+  function gear() {
+    var pts = [];
+    var at = function (deg, r) { var a = deg * Math.PI / 180; return (12 + r * Math.cos(a)).toFixed(2) + " " + (12 + r * Math.sin(a)).toFixed(2); };
+    for (var i = 0; i < 8; i++) pts.push(at(i * 45 - 14, 6.9), at(i * 45 - 8, 9.6), at(i * 45 + 8, 9.6), at(i * 45 + 14, 6.9));
+    return "M" + pts.join(" L") + " Z";
+  }
+
   // Built-in icons that aren't tools.
   var BUILTIN = {
+    // The panel header and edit mode: pencil (edit mode), gear (Layout & Style), remove, add.
+    pencil: ["M4.5 19.5 L5.6 15 L15.4 5.2 Q16.6 4 17.8 5.2 L18.8 6.2 Q20 7.4 18.8 8.6 L9 18.4 Z", "M13.6 7 L17 10.4"],
+    gear: [gear(), "O12 12 3"],
+    close: ["M7 7 L17 17 M17 7 L7 17"],
+    plus: ["M12 5 V19 M5 12 H19"],
     // A magnifier (the lens).
     command: [{ d: "O10 10 5.5", stroke: "accent", w: 2 }, { d: "M14.2 14.2 L20 20", w: 2.4 }],
     // {} braces (the dot).
@@ -1963,23 +2086,45 @@ MK.optionsDialog = (function () {
 })();
 
 // ---- src/core/70_panel.js
-// The panel UI: a header (title, layout list, the Layout & Style button, the command box) and a
-// grid of custom-drawn tool buttons. Click runs a tool, Shift-click or right-click opens its
-// options, dragging a button more than 4 px reorders it. Each panel polls the settings `rev`
-// and rebuilds when another panel (or the dialog) saved something.
+// The panel UI: a header (title, layout list, the edit-mode pencil, the Layout & Style gear, the
+// command box) over a grid of custom-drawn cells. MK.layout.pack places the items: tools are
+// 1 x 1, widgets declare their span. Each panel polls the settings `rev` and rebuilds when
+// another panel (or the dialog) saved something.
 //
-// Mouse events reach the control under the pointer with clientX/Y relative to it. The grid's
-// listeners turn those into grid coordinates from the known cell size and spacing (rows and
-// cells are laid out top-left with that spacing), so no layout bounds are needed.
+// Every cell, and every interactive part of a widget, is an `iconbutton` with onDraw and no
+// drawOSControl: EffectCraft shows the help tip of a custom-drawn control that isn't a
+// container (scriptui_view.rs draw_widget), but not of a custom-drawn group. Input comes only
+// through the grid's mouse listeners (mousedown / mousemove / mouseup bubble up from the cell
+// under the pointer), never onClick, so a click runs once. Every grid control carries its grid
+// position (mkGX, mkGY), which turns an event's clientX / clientY into grid coordinates.
+//
+// Edit mode (the pencil; per panel, in memory) is the only time dragging reorders: cells get a
+// dashed outline and a remove button, and a trailing "+" cell opens the Add list. Out of edit
+// mode, buttons run and widgets take input.
+//
+// The panel is laid out to its content: nothing stretches, so the root's preferred size is the
+// header plus the packed grid plus the margins, which EffectCraft reports as the panel bounds.
 
 MK.ui = {};
 MK.ui.seq = 0;
 MK.ui.POLL_MS = 700;
 MK.ui.DRAG_PX = 4;
+// Header row height, its icon buttons and the layout list's width range, in px.
+MK.ui.HEADER_H = 24;
+MK.ui.ICON_BTN = 22;
+MK.ui.DD_MIN = 44;
+MK.ui.DD_MAX = 120;
+// The narrowest header: the layout list at its smallest, the pencil and the gear.
+MK.ui.headerMin = function () { return MK.ui.DD_MIN + 2 * MK.ui.ICON_BTN + 2 * 6; };
 MK.ui.dist = function (a, b) { return Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])); };
-// Replaced by tests: how a button opens options and the Layout & Style dialog.
+// Replaced by tests: how a button opens options, the Layout & Style dialog and the Add list.
 MK.ui.openOptions = function (id) { return MK.optionsDialog.open(id); };
 MK.ui.openLayoutDialog = function (panelIndex, tab) { return MK.layoutDialog.open(panelIndex, tab); };
+MK.ui.openAddList = function (panelIndex) {
+  var D = MK.ui.buildAddList(panelIndex);
+  D.win.show();
+  return D.added;
+};
 
 // Cell width and height for a style: icon and name modes are cellSize square; iconName is
 // wider, with the name under the icon, or beside it when cellSize is 32 or less.
@@ -1989,16 +2134,36 @@ MK.ui.cellSize = function (style) {
   return s > 32 ? { w: Math.round(s * 1.6), h: s + 12, compact: false } : { w: s + 88, h: s, compact: true };
 };
 
+// A grid item's span: a widget's own, 1 x 1 for everything else.
+MK.ui.span = function (id) {
+  var t = MK.tools[id];
+  return t && t.kind === "widget" ? t.span : [1, 1];
+};
+
+// Pixel geometry of `items` (plus `extra` trailing 1 x 1 cells) for a style: {cols, rows, sz,
+// sp, w, h, rects: [[x, y, w, h], ...]}. The grid is only as wide as the columns it uses.
+MK.ui.geometry = function (items, style, extra) {
+  var sz = MK.ui.cellSize(style), sp = style.spacing;
+  var spans = MK.util.map(items, function (it) { return MK.ui.span(it.id); });
+  for (var e = 0; e < (extra || 0); e++) spans.push([1, 1]);
+  var pk = MK.layout.pack(spans, style.columns), rects = [];
+  for (var i = 0; i < pk.at.length; i++) {
+    rects.push([pk.at[i][0] * (sz.w + sp), pk.at[i][1] * (sz.h + sp), pk.spans[i][0] * (sz.w + sp) - sp, pk.spans[i][1] * (sz.h + sp) - sp]);
+  }
+  return {
+    cols: pk.cols, rows: pk.rows, sz: sz, sp: sp, rects: rects,
+    w: pk.cols ? pk.cols * (sz.w + sp) - sp : 0, h: pk.rows ? pk.rows * (sz.h + sp) - sp : 0
+  };
+};
 
 // What a button shows: name, icon, image, colours, and whether it is missing or flagged.
 MK.ui.look = function (item, style, library) {
   var id = item.id, tool = MK.tools[id];
   var lib = !tool && id.indexOf("lib:") === 0 && MK.library ? MK.library.find(library || MK.library.list(), id) : null;
   var d = MK.describe(id, library);
-  var cat = tool ? tool.category : lib ? "Library" : null;
   var look = {
     id: id, name: item.name || d.name, description: d.description, missing: d.missing, tool: tool, lib: lib,
-    accent: item.accent || (lib && lib.accent) || (cat ? MK.ACCENTS[cat] : "#8A8A8A"),
+    accent: item.accent || (lib && lib.accent) || style.accent,
     fg: item.fg || (lib && lib.fg) || style.fg,
     bg: item.bg || (lib && lib.bg) || style.cellBg,
     icon: tool ? tool.icon : lib ? MK.library.iconOf(lib) : MK.icons.builtin.missing,
@@ -2016,6 +2181,9 @@ MK.ui.look = function (item, style, library) {
   if (!look.showIcon && !look.showName) look.showIcon = true;
   return look;
 };
+
+// "Animate: Bounce", "Widget: Ease": an entry of MK.catalog in Add lists.
+MK.ui.entryLabel = function (e) { return (e.kind === "widget" ? "Widget" : e.category) + ": " + e.name; };
 
 // Shortens text with an ellipsis until it fits maxW.
 MK.ui.fit = function (g, text, font, maxW) {
@@ -2045,22 +2213,76 @@ MK.ui.wrap = function (g, text, font, maxW, maxLines) {
   return lines;
 };
 
-// Paints one button. o: {w, h, compact, look, style, hover, dimmed, dropLeft, dropRight}.
+// Drawing helpers for cells and widgets. Colours are hex; everything goes through U.rgba.
+MK.ui.gfx = (function () {
+  var U = MK.util, X = {};
+  function trace(g, pts) {
+    g.newPath();
+    g.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
+    g.closePath();
+  }
+  // A rounded rectangle, filled and / or outlined (1 px inside the edge).
+  X.box = function (g, x, y, w, h, r, fill, border, alpha) {
+    if (fill) {
+      trace(g, MK.icons.geom.roundRect(x, y, w, h, r));
+      g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(fill, alpha)));
+    }
+    if (border) {
+      trace(g, MK.icons.geom.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, Math.max(0, r - 0.5)));
+      g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(border, alpha), 1));
+    }
+  };
+  X.circle = function (g, cx, cy, r, fill) {
+    g.newPath();
+    g.ellipsePath(cx - r, cy - r, 2 * r, 2 * r);
+    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(fill)));
+  };
+  X.font = function (size, bold) { return ScriptUI.newFont("dialog", bold ? "BOLD" : "REGULAR", size); };
+  // Text with its top-left at (x, y). EffectCraft draws every font regular, so bold is the text
+  // drawn twice, 0.6 px apart.
+  X.text = function (g, str, x, y, size, hex, bold) {
+    var f = X.font(size, bold), pen = g.newPen(g.PenType.SOLID_COLOR, U.rgba(hex), 1);
+    g.drawString(str, pen, x, y, f);
+    if (bold && U.EFFECTCRAFT) g.drawString(str, pen, x + 0.6, y, f);
+  };
+  X.textW = function (g, str, size, bold) { return g.measureString(String(str), X.font(size, bold))[0]; };
+  // A dashed outline 3 px inside a w x h cell (edit mode).
+  X.dashes = function (g, w, h, hex) {
+    var x0 = 3, y0 = 3, x1 = w - 3, y1 = h - 3, on = 4, off = 3, a;
+    g.newPath();
+    for (a = x0; a < x1; a += on + off) { g.moveTo(a, y0); g.lineTo(Math.min(a + on, x1), y0); g.moveTo(a, y1); g.lineTo(Math.min(a + on, x1), y1); }
+    for (a = y0; a < y1; a += on + off) { g.moveTo(x0, a); g.lineTo(x0, Math.min(a + on, y1)); g.moveTo(x1, a); g.lineTo(x1, Math.min(a + on, y1)); }
+    g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(hex, 0.5), 1));
+  };
+  // An inner widget button: a filled rounded rectangle with a 24-grid icon at 70 % of its side.
+  X.button = function (g, w, h, r, icon, fg, accent, hover) {
+    X.box(g, 0, 0, w, h, r, hover ? U.mixHex(MK.THEME.button, "#FFFFFF", 0.12) : MK.THEME.button);
+    var s = Math.round(Math.min(w, h) * 0.7);
+    MK.icons.draw(g, icon, Math.round((w - s) / 2), Math.round((h - s) / 2), s, fg, accent);
+  };
+  // The 2 px drop indicator at the left or right edge.
+  X.dropMark = function (g, w, h, right) {
+    g.newPath();
+    g.rectPath(right ? w - 2 : 0, 0, 2, h);
+    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba("#FFFFFF")));
+  };
+  return X;
+})();
+
+// Paints a cell's frame: the rounded background and the border.
+MK.ui.frame = function (g, w, h, style, bg, dimmed) {
+  MK.ui.gfx.box(g, 0, 0, w, h, style.radius, bg, style.cellBorder, dimmed ? 0.45 : 1);
+};
+
+// Paints one button. o: {w, h, compact, look, style, hover, dimmed, dropLeft, dropRight, editing}.
 MK.ui.paintCell = function (g, o) {
   var U = MK.util, L = o.look, w = o.w, h = o.h, s = o.style.cellSize;
-  var bg = o.hover ? U.mixHex(L.bg, "#FFFFFF", 0.14) : L.bg;
-  g.newPath();
-  g.rectPath(0, 0, w, h);
-  g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(bg, o.dimmed ? 0.45 : 1)));
-  if (o.style.cellBorder) {
-    g.newPath();
-    g.rectPath(0.5, 0.5, w - 1, h - 1);
-    g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(o.style.cellBorder), 1));
-  }
+  MK.ui.frame(g, w, h, o.style, o.hover ? U.mixHex(L.bg, "#FFFFFF", 0.08) : L.bg, o.dimmed);
   var font = ScriptUI.newFont("dialog", "REGULAR", U.clamp(Math.round(s * 0.24), 9, 12));
   var lineH = Math.ceil(g.measureString("Ag", font)[1]);
   var pen = g.newPen(g.PenType.SOLID_COLOR, U.rgba(L.fg), 1);
-  var isz = Math.round(s * (o.compact ? 0.6 : 0.55));
+  var isz = Math.round(s * (o.compact ? 0.6 : L.showName ? 0.55 : 0.62));
   var drawIcon = function (x, y) {
     if (L.image) {
       try { g.drawImage(L.image, x, y, isz, isz); return; } catch (e) {}
@@ -2089,24 +2311,133 @@ MK.ui.paintCell = function (g, o) {
     var y0 = Math.round((h - lines.length * lineH) / 2);
     for (var i = 0; i < lines.length; i++) g.drawString(lines[i], pen, Math.round((w - g.measureString(lines[i], font)[0]) / 2), y0 + i * lineH, font);
   }
-  if (L.dot) {
-    g.newPath();
-    g.ellipsePath(w - 9, 3, 6, 6);
-    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(L.accent)));
-  }
-  if (o.dropLeft || o.dropRight) {
-    var x = o.dropLeft ? 0 : w - 2;
-    g.newPath();
-    g.rectPath(x, 0, 2, h);
-    g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba("#FFFFFF")));
-  }
+  if (L.dot) MK.ui.gfx.circle(g, w - 7, 7, 3, L.accent);
+  if (o.editing) MK.ui.gfx.dashes(g, w, h, L.fg);
+  if (o.dropLeft || o.dropRight) MK.ui.gfx.dropMark(g, w, h, !o.dropLeft);
 };
 
-// Builds panel `index` (0-3) of the active layout into `host` (a Panel or a palette Window).
+// A small square header or edit button: an icon from MK.icons.builtin, centred.
+MK.ui.paintGlyph = function (g, w, h, icon, hex, back) {
+  if (back) MK.ui.gfx.box(g, 0, 0, w, h, Math.min(w, h) / 2, back);
+  var s = Math.round(Math.min(w, h) * 0.8);
+  MK.icons.draw(g, icon, Math.round((w - s) / 2), Math.round((h - s) / 2), s, hex, hex);
+};
+
+// The Add list behind the "+" cell: tools, widgets and library items not in panel
+// `panelIndex` yet. build makes the dialog without showing it; Add saves the layout and sets
+// `added` to the new id.
+MK.ui.buildAddList = function (panelIndex) {
+  var U = MK.util, st = MK.layout.state(), items = st.layouts[st.active].panels[panelIndex].items;
+  var cat = U.filter(MK.catalog(st.library, true), function (e) { return MK.layout.findId(items, e.id) < 0; });
+  var D = { ids: U.map(cat, function (e) { return e.id; }), added: null };
+  var win = new Window("dialog", MK.NAME + ": Add to " + st.layouts[st.active].panels[panelIndex].title);
+  win.orientation = "column";
+  win.alignChildren = ["fill", "top"];
+  D.win = win;
+  D.list = win.add("listbox", undefined, U.map(cat, MK.ui.entryLabel));
+  D.list.preferredSize = [300, 280];
+  D.list.helpTip = "Tools, widgets and library items this panel doesn't have yet";
+  if (cat.length) D.list.selection = 0;
+  var row = win.add("group");
+  row.alignment = ["right", "top"];
+  var cancel = row.add("button", undefined, "Cancel", { name: "cancel" });
+  D.addBtn = row.add("button", undefined, "Add", { name: "ok" });
+  D.addBtn.enabled = cat.length > 0;
+  D.addBtn.helpTip = "Adds the chosen item at the end of the panel";
+  D.add = function () {
+    var s = D.list.selection;
+    if (!s || !D.ids[s.index]) return false;
+    try {
+      MK.layout.save(MK.layout.addItem(MK.layout.get(), panelIndex, D.ids[s.index]));
+    } catch (e) {
+      MK.prompts.alert(U.errText(e));
+      return false;
+    }
+    D.added = D.ids[s.index];
+    win.close(1);
+    return true;
+  };
+  D.addBtn.onClick = D.add;
+  cancel.onClick = function () { win.close(2); };
+  win.defaultElement = D.addBtn;
+  win.cancelElement = cancel;
+  return D;
+};
+
+// The API a widget's build(w) gets for its cell: its size and style, its saved values, and
+// part() / field() to add interactive controls. Parts are iconbuttons the panel's mouse
+// listeners drive: click({shift}), press(x, y), drag(x, y) and release() (x, y in the part).
+MK.ui.widgetApi = function (P, tool, cell, index, rect, look, style) {
+  var W = {
+    id: tool.id, tool: tool, cell: cell, index: index, w: rect[2], h: rect[3], style: style, look: look,
+    editing: P.editing, panel: P, values: MK.options.get(tool),
+    // paint(g): the widget's own drawing on its background (labels and such).
+    paint: null,
+    // onShift(): Shift-click (or right-click) anywhere on the widget; without it, parts get
+    // click({shift: true}).
+    onShift: null
+  };
+  // Saves `partial` into the widget's values (toolOptions under its id); the panel rebuilds.
+  W.save = function (partial) {
+    for (var k in partial) if (MK.util.has(partial, k)) W.values[k] = partial[k];
+    var r = MK.options.save(tool, W.values);
+    if (r.ok) W.values = r.values;
+    P.refresh();
+    return W.values;
+  };
+  // Runs the widget with `options` on top of its values: one undo step, through the runner.
+  W.run = function (options) {
+    var r = MK.run(tool.id, options);
+    P.refresh();
+    return r;
+  };
+  // Opens a tool's options (its own dialog), then catches up with what it saved.
+  W.options = function (id) {
+    var r = MK.ui.openOptions(id);
+    P.refresh();
+    return r;
+  };
+  W.hover = function (ctl) { return P.hoverCtl === ctl; };
+  W.part = function (name, r, h) {
+    var b = cell.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
+    b.preferredSize = [r[2], r[3]];
+    b.helpTip = h.tip;
+    b.mkRole = "part";
+    b.mkPart = name;
+    b.mkIndex = index;
+    b.mkGX = rect[0] + r[0];
+    b.mkGY = rect[1] + r[1];
+    b.mkW = r[2];
+    b.mkH = r[3];
+    b.mkClick = h.click || null;
+    b.mkPress = h.press || null;
+    b.mkDrag = h.drag || null;
+    b.mkRelease = h.release || null;
+    b.onDraw = function () { if (h.draw) h.draw(this.graphics, b); };
+    return b;
+  };
+  // A text field; onChange(text) runs when it commits. Disabled in edit mode.
+  W.field = function (name, r, text, tip, onChange) {
+    var et = cell.add("edittext", [r[0], r[1], r[0] + r[2], r[1] + r[3]], text);
+    et.preferredSize = [r[2], r[3]];
+    et.helpTip = tip;
+    et.enabled = !P.editing;
+    et.mkRole = "field";
+    et.mkPart = name;
+    et.mkIndex = index;
+    et.mkGX = rect[0] + r[0];
+    et.mkGY = rect[1] + r[1];
+    et.onChange = function () { onChange(et.text); };
+    return et;
+  };
+  return W;
+};
+
+// Builds panel `index` (0-4) of the active layout into `host` (a Panel or a palette Window).
 // Returns the controller {host, index, rebuild(), items(), cells, grid, ...}.
 MK.ui.buildPanel = function (host, index) {
-  var U = MK.util;
-  var P = { host: host, index: index, rev: -1, cols: 4, cells: [], drag: null, hover: -1, closed: false, filling: false };
+  var U = MK.util, G = MK.ui.gfx;
+  var P = { host: host, index: index, rev: -1, cols: 4, cells: [], widgets: [], drag: null, hover: -1, hoverCtl: null, closed: false, filling: false, editing: false };
   P.key = "p" + (++MK.ui.seq);
 
   P.layout = function () { return P.state.layouts[P.state.active]; };
@@ -2116,95 +2447,128 @@ MK.ui.buildPanel = function (host, index) {
     for (var n = 0; n < 1000 && host.children.length; n++) host.remove(host.children[host.children.length - 1]);
   }
 
-  function header(pc) {
-    var st = P.state;
-    var hdr = host.add("group");
-    hdr.orientation = "row";
-    hdr.alignChildren = ["left", "center"];
-    hdr.alignment = ["fill", "top"];
-    hdr.spacing = 4;
-    P.title = hdr.add("statictext", undefined, pc.title);
-    var names = U.keys(st.layouts);
-    P.filling = true;
-    var dd = hdr.add("dropdownlist", undefined, names);
-    dd.selection = U.indexOf(names, st.active);
-    dd.helpTip = "Layout";
-    P.filling = false;
-    dd.onChange = function () {
-      if (P.filling || !dd.selection) return;
-      var n = dd.selection.text;
-      if (n === P.state.active) return;
-      try {
-        MK.layout.switchTo(n);
-      } catch (e) {
-        MK.prompts.alert(U.errText(e));
-      }
-      P.rebuild();
+  // The title row, exactly `width` wide: title, layout list, pencil and gear at fixed places.
+  // The list shrinks, then the title, so it never gets wider than `width`.
+  function header(parent, pc, width) {
+    var H = MK.ui.HEADER_H, B = MK.ui.ICON_BTN, GAP = 6, st = P.state, style = pc.style;
+    var hdr = parent.add("group");
+    hdr.orientation = "stack";
+    hdr.margins = 0;
+    hdr.preferredSize = [width, H];
+    hdr.mkRole = "header";
+    P.header = hdr;
+    var avail = width - 2 * B - 2 * GAP, need = Math.ceil(pc.title.length * 14 * 0.7) + 2;
+    var dd = avail >= MK.ui.DD_MIN ? Math.min(MK.ui.DD_MAX, Math.max(MK.ui.DD_MIN, avail - need - GAP)) : 0;
+    var tw = Math.max(0, avail - (dd ? dd + GAP : 0));
+    P.title = hdr.add("statictext", [0, 0, tw, H], pc.title);
+    P.title.helpTip = pc.title + ": panel " + (P.index + 1) + " of the \"" + st.active + "\" layout";
+    P.title.onDraw = function () {
+      var g = this.graphics, t = MK.ui.fit(g, pc.title.toUpperCase(), G.font(14, true), tw - 2);
+      if (tw > 12) G.text(g, t, 0, Math.round((H - 17) / 2), 14, style.fg, true);
     };
-    P.layoutList = dd;
-    var gear = hdr.add("button", undefined, "⚙");
-    gear.preferredSize = [28, 22];
-    gear.helpTip = "Layout & Style… (move buttons between panels, colours, layouts, library)";
-    gear.onClick = function () {
+    P.layoutList = null;
+    if (dd) {
+      var names = U.keys(st.layouts);
+      P.filling = true;
+      var list = hdr.add("dropdownlist", [tw + GAP, 1, tw + GAP + dd, H - 1], names);
+      list.selection = U.indexOf(names, st.active);
+      list.helpTip = "Layout: pick one to switch every panel to it";
+      P.filling = false;
+      list.onChange = function () {
+        if (P.filling || !list.selection) return;
+        var n = list.selection.text;
+        if (n === P.state.active) return;
+        try {
+          MK.layout.switchTo(n);
+        } catch (e) {
+          MK.prompts.alert(U.errText(e));
+        }
+        P.rebuild();
+      };
+      P.layoutList = list;
+    }
+    var y = Math.round((H - B) / 2);
+    P.pencil = hdr.add("iconbutton", [width - 2 * B - GAP, y, width - B - GAP, y + B]);
+    P.pencil.helpTip = P.editing ? "Done: leave edit mode" : "Edit this panel: drag to reorder, ✕ removes, + adds";
+    P.pencil.onDraw = function () { MK.ui.paintGlyph(this.graphics, B, B, MK.icons.builtin.pencil, P.editing ? style.accent : style.fg); };
+    P.pencil.onClick = function () { P.setEditing(!P.editing); };
+    P.gear = hdr.add("iconbutton", [width - B, y, width, y + B]);
+    P.gear.helpTip = "Layout & Style… (move buttons between panels, colours, layouts, library)";
+    P.gear.onDraw = function () { MK.ui.paintGlyph(this.graphics, B, B, MK.icons.builtin.gear, style.fg); };
+    P.gear.onClick = function () {
       MK.ui.openLayoutDialog(P.index);
       P.refresh();
     };
-    P.gear = gear;
-    if (pc.style.showCommandBox && MK.commandBox) P.commandBox = MK.commandBox.attach(hdr, { after: function () { P.refresh(); } });
   }
 
-  function grid(pc) {
-    var sz = MK.ui.cellSize(pc.style), sp = pc.style.spacing, items = pc.items;
-    P.sz = sz;
-    P.sp = sp;
-    // EffectCraft reports a panel's bounds as its content size, not the dock's, so the column
-    // count is a style setting rather than measured.
-    P.cols = pc.style.columns;
-    var g = host.add("group");
-    g.orientation = "column";
-    g.alignChildren = ["left", "top"];
-    g.alignment = ["fill", "top"];
-    g.spacing = sp;
+  function grid(parent, pc, geo) {
+    var items = pc.items, style = pc.style, n = items.length;
+    var g = parent.add("group");
+    g.orientation = "stack";
     g.margins = 0;
+    g.preferredSize = [geo.w, geo.h];
     g.mkRole = "grid";
     P.grid = g;
+    P.geo = geo;
+    P.sz = geo.sz;
+    P.sp = geo.sp;
+    P.cols = geo.cols;
     P.cells = [];
-    if (pc.style.panelBg) {
-      g.onDraw = function () {
-        var gr = this.graphics, b = this.size;
-        gr.newPath();
-        gr.rectPath(0, 0, b[0] || P.cols * (sz.w + sp), b[1] || 1000);
-        gr.fillPath(gr.newBrush(gr.BrushType.SOLID_COLOR, U.rgba(pc.style.panelBg)));
-      };
-    }
-    if (!items.length) {
-      var t = g.add("statictext", undefined, "No buttons yet. Click ⚙ to add tools.");
-      t.mkRole = "empty";
-    }
-    var row = null;
-    for (var i = 0; i < items.length; i++) {
-      var r = Math.floor(i / P.cols), c = i % P.cols;
-      if (c === 0) {
-        row = g.add("group");
-        row.orientation = "row";
-        row.alignChildren = ["left", "top"];
-        row.spacing = sp;
-        row.margins = 0;
-        row.mkRole = "row";
-        row.mkRow = r;
+    P.widgets = [];
+    for (var i = 0; i < n; i++) {
+      var r = geo.rects[i], look = MK.ui.look(items[i], style, P.state.library), cell;
+      if (look.tool && look.tool.kind === "widget") cell = widgetCell(g, i, r, look, style);
+      else {
+        cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
+        cell.helpTip = look.name + " – " + look.description +
+          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + (P.editing ? "\nDrag to reorder." : "");
+        cell.onDraw = paint;
       }
-      var cell = row.add("group");
-      cell.preferredSize = [sz.w, sz.h];
+      cell.preferredSize = [r[2], r[3]];
       cell.mkRole = "cell";
       cell.mkIndex = i;
-      cell.mkRow = r;
-      cell.mkCol = c;
       cell.mkId = items[i].id;
-      var look = MK.ui.look(items[i], pc.style, P.state.library);
-      cell.helpTip = look.name + " – " + look.description +
-        (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + "\nDrag to reorder.";
-      cell.onDraw = paint;
+      cell.mkGX = r[0];
+      cell.mkGY = r[1];
       P.cells.push(cell);
+    }
+    P.addCell = null;
+    if (geo.rects.length > n) {
+      var ra = geo.rects[n], add = g.add("iconbutton", [ra[0], ra[1], ra[0] + ra[2], ra[1] + ra[3]]);
+      add.preferredSize = [ra[2], ra[3]];
+      add.helpTip = "Add a tool or widget to this panel";
+      add.mkRole = "add";
+      add.mkGX = ra[0];
+      add.mkGY = ra[1];
+      add.mkClick = function () {
+        MK.ui.openAddList(P.index);
+        P.refresh();
+      };
+      add.onDraw = function () {
+        var gr = this.graphics;
+        if (P.hoverCtl === add) MK.ui.frame(gr, ra[2], ra[3], style, U.mixHex(style.cellBg, "#FFFFFF", 0.08));
+        G.dashes(gr, ra[2], ra[3], style.fg);
+        var s = Math.round(Math.min(ra[2], ra[3]) * 0.4);
+        MK.icons.draw(gr, MK.icons.builtin.plus, Math.round((ra[2] - s) / 2), Math.round((ra[3] - s) / 2), s, style.fg, style.accent);
+      };
+      P.addCell = add;
+    }
+    // Remove buttons go last, so they sit on top of their cells.
+    P.removeButtons = [];
+    if (P.editing) {
+      for (var j = 0; j < n; j++) {
+        var rr = geo.rects[j], x = rr[0] + rr[2] - 17, y = rr[1] + 3;
+        var rm = g.add("iconbutton", [x, y, x + 14, y + 14]);
+        rm.preferredSize = [14, 14];
+        rm.helpTip = "Remove " + MK.ui.look(items[j], style, P.state.library).name + " from this panel";
+        rm.mkRole = "remove";
+        rm.mkIndex = j;
+        rm.mkGX = x;
+        rm.mkGY = y;
+        rm.mkClick = removeAt(j);
+        rm.onDraw = function () { MK.ui.paintGlyph(this.graphics, 14, 14, MK.icons.builtin.close, "#FFFFFF", P.hoverCtl === this ? style.accent : MK.THEME.button); };
+        P.removeButtons.push(rm);
+      }
     }
     g.addEventListener("mousedown", down);
     g.addEventListener("mousemove", move);
@@ -2212,75 +2576,170 @@ MK.ui.buildPanel = function (host, index) {
     g.addEventListener("mouseout", out);
   }
 
+  function removeAt(i) {
+    return function () {
+      try {
+        MK.layout.save(MK.layout.removeItem(P.layout(), P.index, i));
+      } catch (e) {
+        MK.prompts.alert(U.errText(e));
+      }
+      P.refresh();
+    };
+  }
+
+  // Drag state shown on cell i: hover, dimmed while dragged, drop marks (insertion slot s is the
+  // left edge of item s, or the right edge of the last item).
+  function state(i) {
+    var d = P.drag, dragging = d && d.moved, n = P.items().length;
+    return {
+      hover: !dragging && P.hover === i && !P.editing, dimmed: dragging && d.from === i, editing: P.editing,
+      dropLeft: dragging && d.slot === i, dropRight: dragging && d.slot === n && i === n - 1
+    };
+  }
+
   function paint() {
-    var i = this.mkIndex, items = P.items(), pc = P.layout().panels[P.index], d = P.drag;
+    var i = this.mkIndex, items = P.items(), pc = P.layout().panels[P.index];
     if (!items[i]) return;
-    var dragging = d && d.moved;
+    var s = state(i), r = P.geo.rects[i];
     MK.ui.paintCell(this.graphics, {
-      w: P.sz.w, h: P.sz.h, compact: P.sz.compact, style: pc.style,
-      look: MK.ui.look(items[i], pc.style, P.state.library),
-      hover: !dragging && P.hover === i, dimmed: dragging && d.from === i,
-      dropLeft: dragging && d.slot === i, dropRight: dragging && d.slot === items.length && i === items.length - 1
+      w: r[2], h: r[3], compact: P.sz.compact, style: pc.style, look: MK.ui.look(items[i], pc.style, P.state.library),
+      hover: s.hover, dimmed: s.dimmed, editing: s.editing, dropLeft: s.dropLeft, dropRight: s.dropRight
     });
+  }
+
+  // A widget's cell: a group with the frame, the widget's parts on top. A widget that fails to
+  // build shows its frame and says why in its help tip.
+  function widgetCell(g, i, r, look, style) {
+    var cell = g.add("group", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
+    cell.orientation = "stack";
+    cell.margins = 0;
+    cell.helpTip = look.name + " – " + look.description;
+    var W = MK.ui.widgetApi(P, look.tool, cell, i, r, look, style);
+    P.widgets[i] = W;
+    try {
+      look.tool.build(W);
+    } catch (e) {
+      cell.helpTip = look.name + " couldn't be built: " + U.errText(e);
+    }
+    cell.onDraw = function () {
+      var gr = this.graphics, s = state(i);
+      MK.ui.frame(gr, r[2], r[3], style, look.bg, s.dimmed);
+      if (W.paint) W.paint(gr);
+      if (s.editing) G.dashes(gr, r[2], r[3], look.fg);
+      if (s.dropLeft || s.dropRight) G.dropMark(gr, r[2], r[3], !s.dropLeft);
+    };
+    return cell;
   }
 
   // Event position -> grid coordinates, or null when it isn't over the grid.
   function gridXY(e) {
-    var t = e.target, x = e.clientX, y = e.clientY;
-    if (t && t.mkRole === "cell") return [x + t.mkCol * (P.sz.w + P.sp), y + t.mkRow * (P.sz.h + P.sp)];
-    if (t && t.mkRole === "row") return [x, y + t.mkRow * (P.sz.h + P.sp)];
-    if (t === P.grid) return [x, y];
+    var t = e.target;
+    if (t && t.mkGX !== undefined) return [t.mkGX + e.clientX, t.mkGY + e.clientY];
+    if (t === P.grid) return [e.clientX, e.clientY];
     return null;
   }
   P.gridXY = gridXY;
 
-  // The button under a grid point, or -1.
+  // The item under a grid point, or -1.
   function cellAt(xy) {
-    var cw = P.sz.w + P.sp, ch = P.sz.h + P.sp;
-    var c = Math.floor(xy[0] / cw), r = Math.floor(xy[1] / ch);
-    if (c < 0 || r < 0 || c >= P.cols || xy[0] - c * cw >= P.sz.w || xy[1] - r * ch >= P.sz.h) return -1;
-    var i = r * P.cols + c;
-    return i < P.items().length ? i : -1;
+    var R = P.geo.rects;
+    for (var i = 0; i < P.items().length; i++) {
+      if (xy[0] >= R[i][0] && xy[0] < R[i][0] + R[i][2] && xy[1] >= R[i][1] && xy[1] < R[i][1] + R[i][3]) return i;
+    }
+    return -1;
   }
   P.cellAt = cellAt;
 
-  // The insertion slot (0..n) nearest a grid point, or -1 when it is off the grid.
+  // The insertion slot (0..n) for a drop at a grid point, or -1 off the grid: before the item
+  // under the pointer when it is in that item's left half, else after it. Over a hole, the
+  // nearest item decides.
   function slotAt(xy) {
-    var n = P.items().length, ch = P.sz.h + P.sp, rows = Math.ceil(n / P.cols);
-    var r = Math.floor(xy[1] / ch);
-    if (xy[1] < -P.sp || r >= rows + 1 || xy[0] < -P.sp) return -1;
-    r = U.clamp(r, 0, rows - 1);
-    var c = U.clamp(Math.round(xy[0] / (P.sz.w + P.sp)), 0, P.cols);
-    return Math.min(r * P.cols + c, n);
+    var n = P.items().length, R = P.geo.rects, sp = P.sp;
+    if (!n || xy[0] < -sp || xy[1] < -sp || xy[0] > P.geo.w + sp || xy[1] > P.geo.h + sp) return -1;
+    var best = 0, bd = Infinity;
+    for (var i = 0; i < n; i++) {
+      var r = R[i], dx = Math.max(r[0] - xy[0], 0, xy[0] - r[0] - r[2]), dy = Math.max(r[1] - xy[1], 0, xy[1] - r[1] - r[3]);
+      if (dx * dx + dy * dy < bd) {
+        bd = dx * dx + dy * dy;
+        best = i;
+      }
+    }
+    return xy[0] < R[best][0] + R[best][2] / 2 ? best : best + 1;
   }
   P.slotAt = slotAt;
 
+  function isWidget(i) { return !!P.widgets[i]; }
+
   function down(e) {
-    var xy = gridXY(e);
+    var xy = gridXY(e), t = e.target;
     if (!xy) return;
-    var i = cellAt(xy);
-    P.drag = { from: i, start: xy, moved: false, slot: -1, options: e.shiftKey || e.button === 2 };
+    var i = cellAt(xy), opt = e.shiftKey || e.button === 2;
+    if (t.mkRole === "remove" || t.mkRole === "add") {
+      P.drag = { button: t };
+      return;
+    }
+    if (P.editing) {
+      P.drag = i >= 0 ? { from: i, start: xy, moved: false, slot: -1 } : null;
+      return;
+    }
+    if (t.mkRole === "field") {
+      P.drag = null;
+      return;
+    }
+    if (t.mkRole === "part") {
+      P.drag = { part: t, shift: opt };
+      if (!opt && t.mkPress) t.mkPress(xy[0] - t.mkGX, xy[1] - t.mkGY);
+      return;
+    }
+    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt };
   }
 
   function move(e) {
     var xy = gridXY(e), d = P.drag;
     P.hover = xy ? cellAt(xy) : -1;
-    if (!d || d.from < 0 || !xy) return;
+    P.hoverCtl = e.target;
+    if (!d || !xy) return;
+    if (d.part) {
+      if (!d.shift && d.part.mkDrag) d.part.mkDrag(xy[0] - d.part.mkGX, xy[1] - d.part.mkGY);
+      return;
+    }
+    // Only edit mode reorders, so a press that wanders off a button never moves it.
+    if (!P.editing || d.from === undefined || d.from < 0) return;
     if (!d.moved && MK.ui.dist(xy, d.start) > MK.ui.DRAG_PX) d.moved = true;
     if (d.moved) d.slot = slotAt(xy);
   }
 
   function out(e) {
+    if (e.target === P.hoverCtl) P.hoverCtl = null;
     if (e.target && e.target.mkRole === "cell" && e.target.mkIndex === P.hover) P.hover = -1;
+  }
+
+  // Ends a part's press: a slider's release, or a click when released on the same part.
+  function endPart(d, t) {
+    var W = P.widgets[d.part.mkIndex];
+    if (d.shift && W && W.onShift) {
+      if (t === d.part) W.onShift();
+      return;
+    }
+    if (!d.shift && d.part.mkRelease) d.part.mkRelease();
+    else if (t === d.part && d.part.mkClick) d.part.mkClick({ shift: d.shift });
   }
 
   function up(e) {
     e.mkOnGrid = true;
-    var d = P.drag, xy = gridXY(e);
+    var d = P.drag, xy = gridXY(e), t = e.target;
     P.drag = null;
     if (!d) return;
-    if (d.moved) {
-      if (xy) P.drop(d.from, slotAt(xy));
+    if (d.button) {
+      if (t === d.button) d.button.mkClick();
+      return;
+    }
+    if (d.part) {
+      endPart(d, t);
+      return;
+    }
+    if (P.editing) {
+      if (d.moved && xy) P.drop(d.from, slotAt(xy));
       return;
     }
     var options = d.options || e.shiftKey || e.button === 2;
@@ -2292,7 +2751,12 @@ MK.ui.buildPanel = function (host, index) {
       }
       return;
     }
-    if (xy && cellAt(xy) === d.from) P.activate(d.from, options);
+    if (!xy || cellAt(xy) !== d.from) return;
+    if (isWidget(d.from)) {
+      if (options && P.widgets[d.from].onShift) P.widgets[d.from].onShift();
+      return;
+    }
+    P.activate(d.from, options);
   }
 
   // Runs button i (or opens its options).
@@ -2321,23 +2785,50 @@ MK.ui.buildPanel = function (host, index) {
     return true;
   };
 
+  P.setEditing = function (on) {
+    P.editing = !!on;
+    P.rebuild();
+  };
+
   P.rebuild = function () {
     if (P.closed) return;
     P.state = MK.layout.state();
     P.rev = MK.settings.rev();
-    var pc = P.layout().panels[P.index];
+    var pc = P.layout().panels[P.index], style = pc.style, n = pc.items.length;
     P.drag = null;
     P.hover = -1;
+    P.hoverCtl = null;
     P.commandBox = null;
+    P.header = null;
     clear();
     host.orientation = "column";
-    host.alignChildren = ["fill", "top"];
-    host.spacing = 6;
-    host.margins = 6;
-    if (pc.style.panelBg) try { host.graphics.backgroundColor = host.graphics.newBrush(host.graphics.BrushType.SOLID_COLOR, U.rgba(pc.style.panelBg)); } catch (e) {}
-    // A hidden title row comes back for an empty panel, or nothing could add buttons.
-    if (!pc.style.hideTitle || !pc.items.length) header(pc);
-    grid(pc);
+    host.alignChildren = ["left", "top"];
+    host.spacing = 0;
+    host.margins = 0;
+    // The body paints the panel background: EffectCraft doesn't paint a panel's own onDraw.
+    var body = host.add("group");
+    body.orientation = "column";
+    body.alignChildren = ["left", "top"];
+    body.spacing = style.spacing;
+    body.margins = style.spacing;
+    body.mkRole = "body";
+    if (style.panelBg) {
+      body.onDraw = function () {
+        var g = this.graphics;
+        g.newPath();
+        g.rectPath(0, 0, 10000, 10000);
+        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(style.panelBg)));
+      };
+    }
+    P.body = body;
+    // An empty panel always shows its "+" cell and title row, or nothing could add buttons.
+    var geo = MK.ui.geometry(pc.items, style, P.editing || !n ? 1 : 0);
+    var showHeader = !style.hideTitle || !n;
+    // The header is as wide as the grid, but keeps room for its buttons and the layout list.
+    var width = Math.max(geo.w, showHeader ? MK.ui.headerMin() : 0);
+    if (showHeader) header(body, pc, width);
+    if (showHeader && style.showCommandBox && MK.commandBox) P.commandBox = MK.commandBox.attach(body, { width: width, after: function () { P.refresh(); } });
+    grid(body, pc, geo);
     try { host.layout.layout(true); } catch (e2) {}
   };
 
@@ -2354,9 +2845,12 @@ MK.ui.buildPanel = function (host, index) {
     delete MK.ui.live[P.key];
   };
 
-  // A drop outside the grid does nothing: forget the drag.
+  // A release outside the grid: a drag is dropped, a slider being dragged still commits.
   host.addEventListener("mouseup", function (e) {
-    if (!e.mkOnGrid) P.drag = null;
+    if (e.mkOnGrid) return;
+    var d = P.drag;
+    P.drag = null;
+    if (d && d.part && !d.shift && d.part.mkRelease) d.part.mkRelease();
   });
   var prevClose = host.onClose;
   host.onClose = function () {
@@ -2388,15 +2882,16 @@ MK.ui.tick = function (key) {
   return true;
 };
 
-// The entry point: builds the UI for a dist file. panel is MK_PANEL (1-4, "menu", or null for
-// no UI). In an installed panel `thisObj` is the Panel; from File > Scripts it is not, and a
-// palette window opens.
+// The entry point: builds the UI for a dist file. panel is MK_PANEL (1-4, "all" for the
+// combined panel 5, "menu", or null for no UI). In an installed panel `thisObj` is the Panel;
+// from File > Scripts it is not, and a palette window opens.
 MK.ui.start = function (thisObj, panel) {
   if (panel === null) return null;
   var isPanel = typeof Panel !== "undefined" && thisObj instanceof Panel;
   if (!isPanel && panel === undefined) return null;
-  var p = panel === undefined ? 1 : panel;
-  var host = isPanel ? thisObj : new Window("palette", MK.NAME + (p === "menu" ? " Menu" : " " + p), undefined, { resizeable: true });
+  var p = panel === undefined ? 1 : panel === "all" ? MK.layout.N_PANELS : panel;
+  var title = p === "menu" ? MK.NAME + " Menu" : p === MK.layout.N_PANELS ? MK.NAME : MK.NAME + " " + p;
+  var host = isPanel ? thisObj : new Window("palette", title, undefined, { resizeable: true });
   if (p === "menu") MK.ui.buildMenu(host);
   else MK.ui.buildPanel(host, MK.util.clamp((Math.round(Number(p)) || 1) - 1, 0, MK.layout.N_PANELS - 1));
   if (host instanceof Window) {
@@ -2411,13 +2906,13 @@ MK.ui.start = function (thisObj, panel) {
 // ---- src/core/80_layout_dialog.js
 // The Layout & Style dialog. It edits a copy of the stored state ({layouts, active, library});
 // OK saves it (one settings write, so every open panel rebuilds), Cancel drops it.
-// Tabs: Buttons (four drawn columns: click to select, drag within and between columns, or use
+// Tabs: Buttons (five drawn columns: click to select, drag within and between columns, or use
 // the arrow buttons), Style (the chosen panel), Button (the selected button's overrides),
 // Layouts and Library. build() makes the dialog without showing it; tests drive it headless.
 
 MK.layoutDialog = (function () {
   var U = MK.util, W = MK.widgets;
-  var ROW_H = 20, LIST_W = 150, MIN_ROWS = 8;
+  var ROW_H = 20, LIST_W = 136, MIN_ROWS = 8;
   var TABS = ["buttons", "style", "button", "layouts", "library"];
 
   function build(panelIndex, tab) {
@@ -2582,7 +3077,7 @@ MK.layoutDialog = (function () {
     D.addList = row2.add("dropdownlist", undefined, []);
     D.addList.preferredSize = [220, -1];
     D.btnAdd = row2.add("button", undefined, "Add Tool");
-    D.btnAdd.helpTip = "Adds the chosen tool or library item after the selected button";
+    D.btnAdd.helpTip = "Adds the chosen tool, widget or library item after the selected button";
     D.btnAdd.onClick = function () {
       var s = D.addList.selection;
       if (!s || !D.addIds[s.index]) return;
@@ -2649,7 +3144,7 @@ MK.layoutDialog = (function () {
   function styleTab(D, tab) {
     var r0 = W.row(tab);
     W.label(r0, "Panel:", 110);
-    D.stylePanel = r0.add("dropdownlist", undefined, ["1", "2", "3", "4"]);
+    D.stylePanel = r0.add("dropdownlist", undefined, ["1", "2", "3", "4", "5"]);
     D.stylePanel.onChange = function () {
       if (D.syncing || !D.stylePanel.selection) return;
       D.panel = D.stylePanel.selection.index;
@@ -2689,6 +3184,8 @@ MK.layoutDialog = (function () {
     D.styleCellBg = color("Button colour", "cellBg", false);
     D.styleBorder = color("Button border", "cellBorder", true, "empty: none");
     D.styleFg = color("Icon and text", "fg", false);
+    D.styleAccent = color("Accent", "accent", false);
+    D.styleRadius = number("Corner radius", "radius", 0, 16);
     var r1 = W.row(tab);
     W.label(r1, "Buttons show", 110);
     D.styleMode = r1.add("dropdownlist", undefined, ["Icon", "Name", "Icon and name"]);
@@ -2945,13 +3442,13 @@ MK.layoutDialog = (function () {
         D.lists[q].mkRows = rows;
         D.lists[q].preferredSize = [LIST_W, rows * ROW_H];
       }
-      var cat = MK.catalog(D.st.library);
+      var cat = MK.catalog(D.st.library, true);
       D.addIds = [];
       var labels = [];
       for (var c = 0; c < cat.length; c++) {
         if (MK.layout.findId(pc.items, cat[c].id) >= 0) continue;
         D.addIds.push(cat[c].id);
-        labels.push(cat[c].category + ": " + cat[c].name);
+        labels.push(MK.ui.entryLabel(cat[c]));
       }
       fillList(D.addList, labels, labels.length ? 0 : -1);
       D.addList.enabled = D.btnAdd.enabled = labels.length > 0;
@@ -2974,6 +3471,8 @@ MK.layoutDialog = (function () {
       D.styleCellBg.set(s.cellBg);
       D.styleBorder.set(s.cellBorder);
       D.styleFg.set(s.fg);
+      D.styleAccent.set(s.accent);
+      D.styleRadius.text = String(s.radius);
       D.styleMode.selection = U.indexOf(MK.layout.MODES, s.buttonMode);
       D.styleHide.value = s.hideTitle;
       D.styleCmd.value = s.showCommandBox;
@@ -3200,7 +3699,9 @@ MK.layoutDialog = (function () {
     return ctx.done(NAME + ": copied " + describe(clip()) + more + ". Click again to paste onto selected keyframes.");
   }
 
-  function paste(ctx, c, o, props) {
+  // Pastes clipboard `c` (the copy() form) onto the selected keys of `props`. `name` starts the
+  // message (default "Ease Copy"); the Key Copy/Paste widget's Shift-Paste uses this too.
+  function paste(ctx, c, o, props, name) {
     var keys = 0, wrongType = 0, noInterp = 0, exprs = 0;
     for (var n = 0; n < props.length; n++) {
       var p = props[n], sel = MK.sel.selectedKeys(p);
@@ -3224,7 +3725,7 @@ MK.layoutDialog = (function () {
       }
     }
     var what = U.filter([o.values && "values", o.easing && "easing", o.interp && "interpolation", o.expression && "expression"], function (x) { return !!x; });
-    var msg = NAME + ": pasted " + what.join(", ") + " onto " + keys + (keys === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
+    var msg = (name || NAME) + ": pasted " + what.join(", ") + " onto " + keys + (keys === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
     if (wrongType) msg += " Values skipped on " + wrongType + " of another type.";
     if (noInterp) msg += " Interpolation skipped on " + noInterp + " that can't take it.";
     if (o.expression && !c.expression) msg += " The copied property had no expression.";
@@ -3263,6 +3764,7 @@ MK.layoutDialog = (function () {
       { d: "M22 16.5 V22 H16.5 Z", fill: "accent" }
     ],
     dot: function () { return !!clip(); },
+    api: { paste: paste },
     options: [
       { key: "values", label: "Paste values (same value type only)", type: "checkbox", "default": false },
       { key: "easing", label: "Paste easing", type: "checkbox", "default": true },
@@ -3781,10 +4283,13 @@ MK.layoutDialog = (function () {
 // ---- src/tools/animate/sequencer.js
 // Sequencer: staggers the selected layers (their start times) or the selected keyframes of each
 // layer (moved together, spacing kept). Items are put in order (top to bottom, bottom to top,
-// seeded random, or selection order); with n items the span is step * (n - 1) frames and item i
-// sits span * curve(i / (n - 1)) frames, rounded to whole frames, after the first one, which
-// keeps its time. A layer's time is its in-point; a keyframe item's time is its earliest
-// selected keyframe.
+// from the centre, seeded random, or selection order). Item k of the order is in step group
+// g = floor(k / group) ("group" items share each step); from the centre, k is the distance from
+// the middle item(s) instead, so both sides move alike. With G the last group, the span is
+// step * G frames and group g sits span * curve(g / G) frames, rounded to whole frames, after
+// group 0 (linear: step * g). Group 0 takes the time of the first item in the order, or from
+// the centre of the middle item (the first of the two when the count is even). A layer's time
+// is its in-point; a keyframe item's time is its earliest selected keyframe.
 
 (function () {
   var NAME = "Sequencer", U = MK.util, A = MK.anim;
@@ -3794,7 +4299,18 @@ MK.layoutDialog = (function () {
     easeOut: function (t) { return 1 - (1 - t) * (1 - t); },
     easeInOut: function (t) { return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); }
   };
-  var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", random: "random", selection: "selection order" };
+  var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", centre: "from the centre", random: "random", selection: "selection order" };
+
+  // The step group of each of n items in order: floor(k / group), with k the distance from the
+  // middle for the centre order (two middle items when n is even).
+  function groups(n, group, centre) {
+    var out = [];
+    for (var k = 0; k < n; k++) {
+      var d = !centre ? k : k < n / 2 ? Math.floor((n - 1) / 2) - k : k - Math.ceil((n - 1) / 2);
+      out.push(Math.floor(d / group));
+    }
+    return out;
+  }
 
   // Fisher-Yates with the Park-Miller generator (exact in doubles), so a seed always gives the
   // same order.
@@ -3840,14 +4356,14 @@ MK.layoutDialog = (function () {
     description: "Staggers the selected layers, or each layer's selected keyframes, a few frames apart.",
     // Four staggered horizontal bars (the first bar).
     icon: [
-      { d: "U2 3.5 9 3 1", fill: "accent" },
-      "U6 8.5 9 3 1",
-      "U10 13.5 9 3 1",
-      "U13 18.5 9 3 1"
+      { d: "M3.5 5 H10.5", stroke: "accent", w: 3 },
+      { d: "M7.5 10 H14.5", w: 3 },
+      { d: "M11.5 15 H18.5", w: 3 },
+      { d: "M14 20 H21", w: 3 }
     ],
     options: [
       { key: "mode", label: "Mode", type: "dropdown", "default": "layers", items: [["layers", "Layers: move their start times"], ["keys", "Keyframes: move each layer's selected keys"]] },
-      { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["random", "Random"], ["selection", "Selection order"]] },
+      { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["centre", "From the centre"], ["random", "Random"], ["selection", "Selection order"]] },
       {
         key: "seed", label: "Random seed", type: "custom", "default": 1, build: seedField,
         validate: function (v) {
@@ -3857,6 +4373,7 @@ MK.layoutDialog = (function () {
         }
       },
       { key: "step", label: "Step", type: "number", "default": 2, min: -1000, max: 1000, unit: "frames", help: "Frames between items, negative or fractional too; the result is rounded to whole frames" },
+      { key: "group", label: "Items per step", type: "number", "default": 1, min: 1, max: 1000, integer: true, help: "How many items in a row share each step" },
       { key: "curve", label: "Curve", type: "dropdown", "default": "linear", items: [["linear", "Linear"], ["easeIn", "Ease in"], ["easeOut", "Ease out"], ["easeInOut", "Ease in-out"]] }
     ],
     run: function (ctx, o) {
@@ -3866,16 +4383,18 @@ MK.layoutDialog = (function () {
       if (o.order !== "selection") list.sort(function (x, y) { return x.layer.index - y.layer.index; });
       if (o.order === "bottomUp") list.reverse();
       if (o.order === "random") list = shuffle(list, o.seed);
-      var n = list.length, span = o.step * (n - 1), base = list[0].time, curve = CURVES[o.curve], moved = 0;
-      for (var i = 1; i < n; i++) {
-        var it = list[i], delta = base + Math.round(span * curve(i / (n - 1))) * ctx.frame - it.time;
+      var n = list.length, g = groups(n, o.group, o.order === "centre"), last = Math.max.apply(null, g);
+      var base = list[o.order === "centre" ? Math.floor((n - 1) / 2) : 0].time, curve = CURVES[o.curve], moved = 0;
+      for (var i = 0; i < n; i++) {
+        var it = list[i], delta = base + (last ? Math.round(o.step * last * curve(g[i] / last)) : 0) * ctx.frame - it.time;
         if (Math.abs(delta) < 1e-9) continue;
         if (keys) {
           for (var q = 0; q < it.props.length; q++) A.move(it.props[q], MK.sel.selectedKeys(it.props[q]), function (k) { return k.time + delta; });
         } else it.layer.startTime = it.layer.startTime + delta;
         moved++;
       }
-      return ctx.done(NAME + ": placed " + n + (keys ? " layers' keyframes" : " layers") + " " + ORDER_TEXT[o.order] + ", " + o.step + " frames apart (" + o.curve + "); moved " + moved + ".");
+      return ctx.done(NAME + ": placed " + n + (keys ? " layers' keyframes" : " layers") + " " + ORDER_TEXT[o.order] + ", " + o.step + " frames apart" +
+        (o.group > 1 ? ", " + o.group + " per step" : "") + " (" + o.curve + "); moved " + moved + ".");
     }
   });
 })();
@@ -5893,6 +6412,435 @@ MK.layoutDialog = (function () {
   });
 })();
 
+// ---- src/tools/widgets/anchor.js
+// Anchor widget (2 x 2): a 3 x 3 grid of squares. Clicking one moves the anchor point of the
+// selected layers, or of the selected shape groups, to that point of their bounds without
+// moving them, through Move Anchor Point's code (with its saved Include masks option). The
+// square used last is highlighted. Shift-click opens Move Anchor Point's options.
+
+(function () {
+  var NAME = "Anchor", U = MK.util, T = MK.THEME;
+  var KEYS = ["tl", "t", "tr", "l", "c", "r", "bl", "b", "br"];
+  var LABEL = { tl: "top left", t: "top", tr: "top right", l: "left", c: "centre", r: "right", bl: "bottom left", b: "bottom", br: "bottom right" };
+
+  MK.registerTool({
+    id: "anchor",
+    kind: "widget",
+    span: [2, 2],
+    name: NAME,
+    category: "Rig",
+    description: "A 3 x 3 grid: click a point to move the anchor of the selected layers or shape groups there.",
+    // Nine squares (the centre one).
+    icon: [
+      { d: "R3 3 5 5 R9.5 3 5 5 R16 3 5 5 R3 9.5 5 5 R16 9.5 5 5 R3 16 5 5 R9.5 16 5 5 R16 16 5 5", fill: "fg" },
+      { d: "R9.5 9.5 5 5", stroke: "accent", w: 1.6 }
+    ],
+    options: [
+      { key: "point", label: "Anchor point", type: "dropdown", "default": "c", items: U.map(KEYS, function (k) { return [k, LABEL[k]]; }) }
+    ],
+    run: function (ctx, o) { return MK.callTool("moveAnchor", ctx, { point: o.point }); },
+    build: function (w) {
+      var gap = Math.max(3, Math.round(w.w * 0.05)), side = Math.min(w.w, w.h);
+      var sq = Math.max(8, Math.floor((side - 2 * Math.round(side * 0.08) - 2 * gap) / 3));
+      var x0 = Math.round((w.w - 3 * sq - 2 * gap) / 2), y0 = Math.round((w.h - 3 * sq - 2 * gap) / 2);
+      w.onShift = function () { w.options("moveAnchor"); };
+      w.squares = {};
+      for (var i = 0; i < 9; i++) {
+        (function (k, x, y) {
+          w.squares[k] = w.part(k, [x, y, sq, sq], {
+            tip: "Anchor to the " + LABEL[k] + ": moves the anchor point of the selected layers or shape groups there without moving them. Shift-click: options (Include masks)",
+            click: function () {
+              w.save({ point: k });
+              w.run({ point: k });
+            },
+            draw: function (g, p) {
+              var fill = w.hover(p) ? U.mixHex(T.anchor, "#FFFFFF", 0.2) : T.anchor, used = w.values.point === k;
+              g.newPath();
+              g.rectPath(0, 0, sq, sq);
+              g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(k === "c" ? T.anchorEdge : fill)));
+              // The centre is a frame: a light border around the square.
+              var inset = k === "c" ? Math.max(3, Math.round(sq * 0.16)) : 1.5;
+              g.newPath();
+              if (k === "c") {
+                g.rectPath(inset, inset, sq - 2 * inset, sq - 2 * inset);
+                g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(fill)));
+              } else {
+                g.rectPath(inset, inset, sq - 2 * inset, sq - 2 * inset);
+                g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
+              }
+              if (used) {
+                g.newPath();
+                g.rectPath(1, 1, sq - 2, sq - 2);
+                g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(w.style.fg), 2));
+              }
+            }
+          });
+        })(KEYS[i], x0 + (i % 3) * (sq + gap), y0 + Math.floor(i / 3) * (sq + gap));
+      }
+    }
+  });
+})();
+
+// ---- src/tools/widgets/ease.js
+// Ease widget (2 x 2): three sliders for the temporal ease of the selected keyframes.
+//   Ease In   influence of the incoming ease, 0.1 to 100 %
+//   Ease Out  influence of the outgoing ease, 0.1 to 100 %
+//   Speed     the speed at the key as a percentage of the segment's average speed, 0 to 200 %
+//             (0 stops at the key). This is Motion Kit's own definition.
+// Releasing a slider applies all three through Ease Keyframes' code (speed / 100 is its speed
+// multiple; it caps the multiple at 100 / influence, so an ease never overshoots). Clicking a
+// slider's icon resets that slider; Shift-click anywhere opens the Ease Keyframes curve editor.
+
+(function () {
+  var NAME = "Ease", U = MK.util, T = MK.THEME;
+  var SLIDERS = [
+    { key: "easeIn", lo: 0.1, hi: 100, icon: ["M14.5 6 L8.5 12 L14.5 18"], tip: "Ease In: influence of the incoming ease (0.1 to 100 %)" },
+    { key: "easeOut", lo: 0.1, hi: 100, icon: ["M9.5 6 L15.5 12 L9.5 18"], tip: "Ease Out: influence of the outgoing ease (0.1 to 100 %)" },
+    { key: "speed", lo: 0, hi: 200, icon: ["M7 4 H17 L7 20 H17 Z"], tip: "Speed: speed at the key as a percentage of the segment's average speed (0 to 200 %, 0 stops at the key)" }
+  ];
+  var INSET = 8;
+
+  function snap(s, v) {
+    var c = U.clamp(v, s.lo, s.hi);
+    return s.key === "speed" ? Math.round(c) : Math.max(s.lo, Math.round(c * 10) / 10);
+  }
+
+  MK.registerTool({
+    id: "ease",
+    kind: "widget",
+    span: [2, 2],
+    name: NAME,
+    category: "Animate",
+    description: "Ease In, Ease Out and Speed sliders; releasing one applies all three to the selected keyframes.",
+    // Three slider tracks (the thumbs).
+    icon: ["M3 6 H21", "M3 12 H21", "M3 18 H21", { d: "O9 6 2.4 O16 12 2.4 O6 18 2.4", fill: "accent" }],
+    options: [
+      { key: "easeIn", label: "Ease In", type: "number", "default": 33, min: 0.1, max: 100, unit: "%" },
+      { key: "easeOut", label: "Ease Out", type: "number", "default": 33, min: 0.1, max: 100, unit: "%" },
+      { key: "speed", label: "Speed", type: "number", "default": 0, min: 0, max: 200, unit: "% of the average speed" }
+    ],
+    run: function (ctx, o) {
+      return MK.callTool("easeKeys", ctx, { inInfluence: o.easeIn, outInfluence: o.easeOut, inSpeed: o.speed / 100, outSpeed: o.speed / 100 });
+    },
+    build: function (w) {
+      var pad = Math.round(w.h * 0.07), rowH = (w.h - 2 * pad) / 3, iconW = 20, defaults = MK.options.defaults(w.tool);
+      var trackX = pad + iconW, trackW = w.w - trackX - pad + INSET / 2;
+      // The value being dragged: {key, value}.
+      var live = null;
+      w.onShift = function () { w.options("easeKeys"); };
+      w.sliders = {};
+      for (var i = 0; i < SLIDERS.length; i++) {
+        (function (s, cy) {
+          var th = Math.round(rowH) - 2, ty = Math.round(cy - th / 2);
+          function value(x, pw) { return snap(s, s.lo + (s.hi - s.lo) * (x - INSET) / Math.max(1, pw - 2 * INSET)); }
+          function current() { return live && live.key === s.key ? live.value : w.values[s.key]; }
+          var icon = w.part(s.key + "Reset", [pad - 2, Math.round(cy - 10), iconW, 20], {
+            tip: s.tip.replace(/ \(.*$/, "") + ". Click to reset it to " + defaults[s.key] + " %.",
+            click: function () {
+              var p = {};
+              p[s.key] = defaults[s.key];
+              w.save(p);
+            },
+            draw: function (g, b) { MK.icons.draw(g, s.icon, 1, 1, 18, w.hover(b) ? w.style.fg : T.label, w.style.accent); }
+          });
+          var track = w.part(s.key, [trackX, ty, trackW, th], {
+            tip: s.tip + ". Drag, then release to apply all three to the selected keyframes. Shift-click: the curve editor.",
+            press: function (x) { live = { key: s.key, value: value(x, trackW) }; },
+            drag: function (x) { if (live && live.key === s.key) live.value = value(x, trackW); },
+            release: function () {
+              if (!live || live.key !== s.key) return;
+              var p = {};
+              p[s.key] = live.value;
+              live = null;
+              w.save(p);
+              w.run();
+            },
+            draw: function (g, b) {
+              var ly = Math.round(th * 0.62), v = current(), x = INSET + (trackW - 2 * INSET) * (v - s.lo) / (s.hi - s.lo);
+              g.newPath();
+              g.moveTo(INSET, ly);
+              g.lineTo(trackW - INSET, ly);
+              g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.label, 0.55), 2));
+              MK.ui.gfx.circle(g, x, ly, w.hover(b) || live ? 7 : 6, w.style.fg);
+              if (live && live.key === s.key) {
+                var t = String(v) + " %", tw = MK.ui.gfx.textW(g, t, 10);
+                MK.ui.gfx.text(g, t, Math.round(U.clamp(x - tw / 2, 0, trackW - tw)), Math.max(0, ly - 21), 10, T.label);
+              }
+            }
+          });
+          w.sliders[s.key] = { icon: icon, track: track, value: current };
+        })(SLIDERS[i], pad + rowH * (i + 0.5));
+      }
+    }
+  });
+})();
+
+// ---- src/tools/widgets/interpolation.js
+// Interpolation widget (2 x 1): Bezier, Hold and Linear buttons set the temporal interpolation
+// of the selected keyframes on both sides. Only the types change (MK.keys.setInterp), so a key
+// switched to Linear or Hold gets its ease back when it goes back to Bezier.
+
+(function () {
+  var NAME = "Interpolation", U = MK.util;
+  var TYPES = {
+    bezier: { name: "Bezier", type: KeyframeInterpolationType.BEZIER, tip: "Bezier: smooth interpolation on both sides of the selected keyframes; their eases come back" },
+    hold: { name: "Hold", type: KeyframeInterpolationType.HOLD, tip: "Hold: the selected keyframes keep their value until the next keyframe" },
+    linear: { name: "Linear", type: KeyframeInterpolationType.LINEAR, tip: "Linear: constant speed on both sides of the selected keyframes" }
+  };
+  var ORDER = ["bezier", "hold", "linear"];
+  // A curve with its two handles (the handle dots); a filled square; an outlined square.
+  var GLYPHS = {
+    bezier: ["M4 19 C11 19 13 5 20 5", { d: "M4 19 L10 19 M20 5 L14 5", stroke: "accent", w: 1.2 }, { d: "O10 19 1.8 O14 5 1.8", fill: "accent" }],
+    hold: [{ d: "R5 5 14 14", fill: "accent" }],
+    linear: [{ d: "R5.5 5.5 13 13", stroke: "accent" }]
+  };
+
+  MK.registerTool({
+    id: "interpolation",
+    kind: "widget",
+    span: [2, 1],
+    name: NAME,
+    category: "Animate",
+    description: "Sets the selected keyframes to Bezier, Hold or Linear interpolation on both sides.",
+    // A curve and a square key (the square).
+    icon: ["M3 20 C9 20 10 6 16 6", { d: "R16 14 6 6", fill: "accent" }],
+    options: [
+      { key: "type", label: "Interpolation", type: "dropdown", "default": "bezier", items: [["bezier", "Bezier"], ["hold", "Hold"], ["linear", "Linear"]] }
+    ],
+    run: function (ctx, o) {
+      var t = TYPES[o.type], props = MK.anim.withSelectedKeys(ctx.props), keys = 0, skipped = 0;
+      if (!props.length) ctx.fail("select keyframes.");
+      for (var n = 0; n < props.length; n++) {
+        var sel = MK.sel.selectedKeys(props[n]), ok = false;
+        for (var j = 0; j < sel.length; j++) if (MK.keys.setInterp(props[n], sel[j], t.type, t.type)) { keys++; ok = true; }
+        if (!ok) skipped++;
+      }
+      if (!keys) ctx.fail("the selected properties can't take " + t.name + " interpolation.");
+      if (skipped) ctx.warn("Skipped " + skipped + (skipped === 1 ? " property that can't" : " properties that can't") + " take it.");
+      return ctx.done(NAME + ": set " + keys + (keys === 1 ? " keyframe" : " keyframes") + " to " + t.name + ".");
+    },
+    build: function (w) {
+      var gap = 6, pad = Math.max(4, Math.round(w.h * 0.11));
+      var b = Math.max(12, Math.min(w.h - 2 * pad, Math.floor((w.w - 2 * pad - 2 * gap) / 3)));
+      var x0 = Math.round((w.w - 3 * b - 2 * gap) / 2), y0 = Math.round((w.h - b) / 2), r = Math.max(2, w.style.radius - 2);
+      w.buttons = {};
+      for (var i = 0; i < ORDER.length; i++) {
+        (function (k, x) {
+          w.buttons[k] = w.part(k, [x, y0, b, b], {
+            tip: TYPES[k].tip,
+            click: function () { w.run({ type: k }); },
+            draw: function (g, p) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w.style.fg, w.style.accent, w.hover(p)); }
+          });
+        })(ORDER[i], x0 + i * (b + gap));
+      }
+    }
+  });
+})();
+
+// ---- src/tools/widgets/keyCopyPaste.js
+// Key Copy/Paste widget (2 x 1): a "N keys copied" label, Copy and Paste.
+//   Copy   the selected keyframes of the selected properties (numbers, points and colours):
+//          values, eases, interpolation, spatial tangents and roving, with their times relative
+//          to the earliest copied key, kept in settings ("keyCopyPaste").
+//   Paste  at the playhead onto the selected properties: the first copied property's keys go
+//          to the first selected property, and so on; one copied property goes to every
+//          selected property. The relative timing is kept, across properties too.
+//   Shift-click Paste: only the easing (the first copied key's eases and interpolation) onto
+//          the selected keyframes, through Ease Copy's paste code.
+
+(function () {
+  var NAME = "Key Copy/Paste", KEY = "keyCopyPaste", U = MK.util, A = MK.anim, K = MK.keys, T = MK.THEME;
+
+  function clip() {
+    var c = MK.settings.get(KEY, null);
+    return c && typeof c === "object" && U.isArray(c.props) && c.props.length ? c : null;
+  }
+  function count(c) {
+    var n = 0;
+    for (var i = 0; c && i < c.props.length; i++) n += c.props[i].keys.length;
+    return n;
+  }
+
+  function copy(ctx) {
+    var props = A.withSelectedKeys(ctx.props), usable = U.filter(props, MK.sel.isNumeric);
+    if (!usable.length) ctx.fail(props.length ? "only keyframes of numbers, points and colours can be copied." : "select the keyframes to copy.");
+    var out = [], t0 = Infinity, i, j;
+    for (i = 0; i < usable.length; i++) {
+      var ks = K.readSelected(usable[i]);
+      for (j = 0; j < ks.length; j++) t0 = Math.min(t0, ks[j].time);
+      out.push({ from: MK.sel.label(usable[i]), valueType: usable[i].propertyValueType, keys: ks });
+    }
+    for (i = 0; i < out.length; i++) {
+      for (j = 0; j < out[i].keys.length; j++) {
+        out[i].keys[j].time -= t0;
+        out[i].keys[j].selected = false;
+      }
+    }
+    MK.settings.set(KEY, { props: out });
+    if (usable.length < props.length) ctx.warn("Skipped " + (props.length - usable.length) + " that aren't numbers, points or colours.");
+    var n = count(clip());
+    return ctx.done(NAME + ": copied " + n + (n === 1 ? " keyframe" : " keyframes") + " from " + out.length + (out.length === 1 ? " property." : " properties."));
+  }
+
+  function paste(ctx, c) {
+    var targets = U.filter(ctx.props, MK.sel.isAnimatable), n = 0, done = 0, i;
+    if (!targets.length) ctx.fail("select the properties to paste onto.");
+    for (i = 0; i < targets.length; i++) {
+      var src = c.props.length === 1 ? c.props[0] : c.props[i];
+      if (!src) {
+        ctx.warn("Skipped " + MK.sel.label(targets[i]) + ": only " + c.props.length + " properties were copied.");
+        continue;
+      }
+      if (src.valueType !== targets[i].propertyValueType) {
+        ctx.warn("Skipped " + MK.sel.label(targets[i]) + ": it holds another kind of value than " + src.from + ".");
+        continue;
+      }
+      n += K.writeAll(targets[i], src.keys, function (k) { return ctx.time + k.time; });
+      done++;
+    }
+    if (!done) ctx.fail("nothing to paste onto: " + ctx.warnings.join(" "));
+    return ctx.done(NAME + ": pasted " + n + (n === 1 ? " keyframe" : " keyframes") + " onto " + done + (done === 1 ? " property" : " properties") + " at " + (Math.round(ctx.time * 1000) / 1000) + " s.");
+  }
+
+  // Shift-Paste: Ease Copy's paste with the first copied key as its clipboard, easing and
+  // interpolation only.
+  function pasteEase(ctx, c) {
+    var props = A.withSelectedKeys(ctx.props), k = c.props[0].keys[0];
+    if (!props.length) ctx.fail("select the keyframes to paste the easing onto.");
+    var ec = { value: null, inEase: k.inEase, outEase: k.outEase, inInterp: k.inInterp, outInterp: k.outInterp, expression: "" };
+    return MK.tools.easeCopy.api.paste(ctx, ec, { values: false, easing: true, interp: true, expression: false }, props, NAME);
+  }
+
+  // Copy: a keyframe on a page with a second page behind it (the keyframe). Paste: a page above
+  // a keyframe, with an arrow down onto it (the keyframe).
+  var COPY = ["M9 5.5 V3.5 Q9 2 10.5 2 H19 Q20.5 2 20.5 3.5 V14.5 Q20.5 16 19 16 H16.5", "U3.5 6.5 12 15.5 1.8", { d: "P9.5 14.2 3.8 4 0", fill: "accent" }];
+  var PASTE = ["U7 2 10 8.5 1.5", "M12 12 V14", "M10 12.4 L12 14.4 L14 12.4", { d: "P12 19 3.8 4 0", fill: "accent" }];
+
+  MK.registerTool({
+    id: "keyCopyPaste",
+    kind: "widget",
+    span: [2, 1],
+    name: NAME,
+    category: "Animate",
+    description: "Copies the selected keyframes, then pastes them at the playhead onto the selected properties.",
+    // A keyframe with a page (the keyframe).
+    icon: ["U8 3 12 15 1.8", "M4 9 V20 Q4 21.5 5.5 21.5 H13", { d: "P11 13 4 4 0", fill: "accent" }],
+    options: [
+      { key: "action", label: "Action", type: "dropdown", "default": "copy", items: [["copy", "Copy"], ["paste", "Paste"], ["pasteEase", "Paste the easing only"]] }
+    ],
+    api: { clipboard: clip, count: count },
+    run: function (ctx, o) {
+      if (o.action === "copy") return copy(ctx);
+      var c = clip();
+      if (!c) ctx.fail("copy keyframes first.");
+      return o.action === "pasteEase" ? pasteEase(ctx, c) : paste(ctx, c);
+    },
+    build: function (w) {
+      var pad = Math.max(4, Math.round(w.h * 0.11)), gap = 5, labelW = Math.round(w.w * 0.32);
+      var b = Math.max(12, Math.min(w.h - 2 * pad, Math.floor((w.w - 2 * pad - labelW - gap) / 2)));
+      var x0 = w.w - pad - 2 * b - gap, y0 = Math.round((w.h - b) / 2), r = Math.max(2, w.style.radius - 2);
+      var n = count(clip());
+      w.paint = function (g) {
+        var size = U.clamp(Math.round(w.h * 0.19), 9, 12), y = Math.round(w.h / 2 - size * 1.25);
+        MK.ui.gfx.text(g, n + (n === 1 ? " key" : " keys"), pad, y, size, T.label);
+        MK.ui.gfx.text(g, "copied", pad, y + Math.round(size * 1.25), size, T.label);
+      };
+      w.copy = w.part("copy", [x0, y0, b, b], {
+        tip: "Copy keys: the selected keyframes of the selected properties, with their values, eases, interpolation, spatial tangents and timing",
+        click: function () { w.run({ action: "copy" }); },
+        draw: function (g, p) { MK.ui.gfx.button(g, b, b, r, COPY, w.style.fg, w.style.accent, w.hover(p)); }
+      });
+      w.paste = w.part("paste", [x0 + b + gap, y0, b, b], {
+        tip: "Paste keys at the playhead onto the selected properties, in order. Shift-click: paste only the easing onto the selected keyframes",
+        click: function (e) { w.run({ action: e.shift ? "pasteEase" : "paste" }); },
+        draw: function (g, p) { MK.ui.gfx.button(g, b, b, r, PASTE, w.style.fg, w.style.accent, w.hover(p)); }
+      });
+    }
+  });
+})();
+
+// ---- src/tools/widgets/sequencerWidget.js
+// Sequencer widget (2 x 1): Amount and Step fields above three order buttons. In the chosen
+// order, item k is offset by Amount x floor(k / Step) frames (Motion Kit's own definition):
+// Amount is frames per step (negative or fractional too; results round to whole frames) and
+// Step is how many items share each step. Orders: top to bottom (layer index), bottom to top,
+// and from the centre (the middle item or two keep their time, the others move by their
+// distance from the middle, alike on both sides). With keyframes selected on the selected
+// layers it sequences those keyframes, otherwise the layers. It runs the Sequencer tool's code,
+// so that tool's saved curve applies; Shift-click opens its options (random order, curves).
+
+(function () {
+  var NAME = "Sequencer", U = MK.util, T = MK.THEME;
+  var ORDERS = [
+    // Bars stepping right going down, the top one first (accent).
+    ["topDown", "Sequence top to bottom (by layer index)", [{ d: "M4 6 H12", stroke: "accent", w: 3 }, { d: "M8 12 H16", w: 3 }, { d: "M12 18 H20", w: 3 }]],
+    // Bars stepping right going up, the bottom one first.
+    ["bottomUp", "Sequence bottom to top", [{ d: "M12 6 H20", w: 3 }, { d: "M8 12 H16", w: 3 }, { d: "M4 18 H12", stroke: "accent", w: 3 }]],
+    // The middle bar first, the outer ones later on both sides.
+    ["centre", "Sequence from the centre out: the middle keeps its time, both sides move alike", [{ d: "M11 6 H19", w: 3 }, { d: "M5 12 H13", stroke: "accent", w: 3 }, { d: "M11 18 H19", w: 3 }]]
+  ];
+
+  MK.registerTool({
+    id: "sequencerWidget",
+    kind: "widget",
+    span: [2, 1],
+    name: NAME,
+    category: "Animate",
+    description: "Staggers the selected layers, or their selected keyframes: Amount frames per step, Step items per step.",
+    // Bars offset from the centre (the middle bar).
+    icon: [{ d: "U9 3.5 11 3 1", fill: "fg" }, { d: "U4 10.5 11 3 1", fill: "accent" }, { d: "U9 17.5 11 3 1", fill: "fg" }],
+    options: [
+      { key: "amount", label: "Amount", type: "number", "default": 1, min: -1000, max: 1000, unit: "frames per step" },
+      { key: "step", label: "Step", type: "number", "default": 1, min: 1, max: 1000, integer: true, unit: "items per step" },
+      { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["centre", "From the centre"]] }
+    ],
+    run: function (ctx, o) {
+      var keys = MK.anim.withSelectedKeys(ctx.props).length > 0;
+      return MK.callTool("sequencer", ctx, { mode: keys ? "keys" : "layers", order: o.order, step: o.amount, group: o.step });
+    },
+    build: function (w) {
+      // Labels, then the two fields side by side, then the three order buttons.
+      var pad = Math.max(3, Math.round(w.h * 0.06)), gap = 3, size = U.clamp(Math.round(w.h * 0.16), 8, 11), labelH = size + 1;
+      var fieldH = Math.min(22, Math.floor((w.h - 2 * pad - labelH - gap) / 2)), btnH = w.h - 2 * pad - labelH - fieldH - gap;
+      var fw = Math.floor((w.w - 2 * pad - 2 * gap) / 2), xa = pad, xs = pad + fw + 2 * gap;
+      var r = Math.max(2, w.style.radius - 2);
+      w.onShift = function () { w.options("sequencer"); };
+      w.paint = function (g) {
+        MK.ui.gfx.text(g, "Amount", xa + 1, pad - 2, size, T.label);
+        MK.ui.gfx.text(g, "Step", xs + 1, pad - 2, size, T.label);
+      };
+      // A field commits a valid value (the widget's options validate it) or shows the saved one again.
+      function field(key, x, tip) {
+        var et = w.field(key, [x, pad + labelH, fw, fieldH], String(w.values[key]), tip, function (text) {
+          var f = w.tool.options[key === "amount" ? 0 : 1], c = MK.options.check(f, text, false);
+          if (c.error) {
+            et.text = String(w.values[key]);
+            MK.prompts.alert(NAME + ": " + c.error);
+            return;
+          }
+          var p = {};
+          p[key] = c.value;
+          w.save(p);
+        });
+        return et;
+      }
+      w.amount = field("amount", xa, "Amount: frames per step (negative or fractional too; results round to whole frames)");
+      w.step = field("step", xs, "Step: how many items in a row share each step (1 or more)");
+      var by = pad + labelH + fieldH + gap, bw = Math.floor((w.w - 2 * pad - 2 * gap) / 3);
+      w.buttons = {};
+      for (var i = 0; i < ORDERS.length; i++) {
+        (function (o, x) {
+          w.buttons[o[0]] = w.part(o[0], [x, by, bw, btnH], {
+            tip: o[1] + ": item k moves Amount x floor(k / Step) frames. Shift-click: all sequencer options",
+            click: function () { w.run({ order: o[0] }); },
+            draw: function (g, p) { MK.ui.gfx.button(g, bw, btnH, r, o[2], w.style.fg, w.style.accent, w.hover(p)); }
+          });
+        })(ORDERS[i], pad + i * (bw + gap));
+      }
+    }
+  });
+})();
+
 // ---- src/extras/command_box.js
 // The command box: a text field in the panel header. Typing lists the tools and library items
 // whose name contains every typed word (any case); Enter runs the first match.
@@ -5922,23 +6870,32 @@ MK.commandBox = (function () {
     return out;
   }
 
-  // Adds the box to `parent`. opts.after(result) runs after a tool ran.
+  // Adds the box to `parent`. opts.after(result) runs after a tool ran. With opts.width the box
+  // is exactly that wide: the field and the clear button, with the matches on a line below.
   function attach(parent, opts) {
     var o = opts || {};
-    var row = parent.add("group");
+    var box = parent.add("group");
+    box.orientation = "column";
+    box.alignChildren = ["left", "top"];
+    box.spacing = 2;
+    box.margins = 0;
+    var row = box.add("group");
     row.orientation = "row";
     row.alignChildren = ["left", "center"];
     row.spacing = 2;
+    row.margins = 0;
     var et = row.add("edittext", undefined, "");
     et.characters = 12;
     et.helpTip = "Find a tool: type words of its name, then press Enter to run the first match.";
-    var hint = row.add("statictext", undefined, "");
-    hint.preferredSize = [150, -1];
+    var hint = (o.width ? box : row).add("statictext", undefined, "");
+    hint.preferredSize = [o.width || 150, 16];
     hint.enabled = false;
+    hint.helpTip = "The matching tools; Enter runs the first";
     var clr = row.add("button", undefined, "×");
     clr.preferredSize = [22, 22];
     clr.helpTip = "Clear";
-    var C = { row: row, edit: et, hint: hint, clear: clr, matches: [] };
+    if (o.width) et.preferredSize = [Math.max(40, o.width - 24), 22];
+    var C = { box: box, row: row, edit: et, hint: hint, clear: clr, matches: [] };
     C.filter = function (text) {
       C.matches = search(text);
       var names = U.map(C.matches.slice(0, SHOWN), function (m) { return m.name; });
@@ -6207,8 +7164,8 @@ return MK;
 })();
 // ---- src/main.js
 // Entry point (last in the bundle, outside the shared model): publish $.global.MotionKit once,
-// then build this file's UI. MK_PANEL is 1-4 or "menu" in the panels and null in
-// motionkit-lib.jsx (no UI).
+// then build this file's UI. MK_PANEL is 1-4, "all" (the combined panel 5) or "menu" in the
+// panels and null in motionkit-lib.jsx (no UI).
 
 if (!MK.api) {
   MK.api = {
@@ -6217,6 +7174,7 @@ if (!MK.api) {
     toolOrder: MK.toolOrder,
     loadErrors: MK.loadErrors,
     run: MK.run,
+    callTool: MK.callTool,
     registerTool: MK.registerTool,
     describe: MK.describe,
     catalog: MK.catalog,
