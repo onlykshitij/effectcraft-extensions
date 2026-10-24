@@ -236,8 +236,8 @@ T.check(!MotionKit.__tick(key4) && wins[3].mkPanel.closed, "onClose cancels the 
 
 // ---- the options dialog (built, not shown: a modal show() blocks headless)
 var od = MotionKit.optionsDialog.build(MotionKit.tools.bounce, MotionKit.options.get("bounce"));
-T.check(od.inputs.amplitude.control.text === "0.7" && od.inputs.jumpInOut.control.type === "checkbox", "fields show the saved values");
-od.inputs.amplitude.control.text = "5";
+T.check(od.inputs.hopHeight.control.text === "20" && od.inputs.jumpInOut.control.type === "checkbox", "fields show the saved values");
+od.inputs.hopHeight.control.text = "500";
 T.alerts = [];
 var okBtn = null, saveBtn = null, defBtn = null;
 (function walk(x) {
@@ -247,11 +247,11 @@ var okBtn = null, saveBtn = null, defBtn = null;
   for (var i = 0; i < (x.children || []).length; i++) walk(x.children[i]);
 })(od.win);
 okBtn.notify("onClick");
-T.check(od.action === null && /Amplitude must be from 0 to 1/.test(T.lastAlert()), "OK with a bad value explains and stays open");
-od.inputs.amplitude.control.text = "0.4";
+T.check(od.action === null && /Amplitude must be from 0 to 200/.test(T.lastAlert()), "OK with a bad value explains and stays open");
+od.inputs.hopHeight.control.text = "35";
 od.inputs.jumpInOut.control.value = true;
 okBtn.notify("onClick");
-T.check(od.action === "run" && MotionKit.options.get("bounce").amplitude === 0.4 && MotionKit.options.get("bounce").jumpInOut === true, "OK saves the options and asks to run");
+T.check(od.action === "run" && MotionKit.options.get("bounce").hopHeight === 35 && MotionKit.options.get("bounce").jumpInOut === true, "OK saves the options and asks to run");
 var od2 = MotionKit.optionsDialog.build(MotionKit.tools.loop, MotionKit.options.get("loop"));
 od2.inputs.type.control.selection = 1;
 od2.inputs.side.control.selection = 2;
@@ -259,7 +259,7 @@ od2.inputs.side.control.selection = 2;
 saveBtn.notify("onClick");
 T.check(od2.action === "save" && MotionKit.options.get("loop").type === "pingpong" && MotionKit.options.get("loop").side === "both", "Save keeps dropdown choices without running");
 defBtn.notify("onClick");
-T.check(od.inputs.amplitude.control.text === "0.7" && od.inputs.jumpInOut.control.value === false, "Defaults resets the fields");
+T.check(od.inputs.hopHeight.control.text === "20" && od.inputs.jumpInOut.control.value === false, "Defaults resets the fields");
 
 // ---- the Layout & Style dialog (built, not shown)
 var stored = JSON.stringify(L.state());

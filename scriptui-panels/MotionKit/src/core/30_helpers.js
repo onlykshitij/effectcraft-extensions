@@ -133,6 +133,17 @@ MK.expr = (function () {
     return e.indexOf(X.MARK + (toolId || "")) === 0;
   };
   X.hasForeign = function (prop) { return !!prop.expression && !X.isOurs(prop); };
+  // Every property under `group` (a layer or property group) whose expression tool `toolId`
+  // wrote (its first line is exactly the mark), added to `out` (returned).
+  X.ofTool = function (group, toolId, out) {
+    out = out || [];
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) X.ofTool(p, toolId, out);
+      else if (p instanceof Property && p.canSetExpression && String(p.expression || "").split("\n")[0] === X.MARK + toolId) out.push(p);
+    }
+    return out;
+  };
   // A JavaScript string literal, for names and text inside expressions.
   X.str = function (s) { return JSON.stringify(String(s)); };
   // Which properties a tool may write: those that can take an expression, minus (when the user

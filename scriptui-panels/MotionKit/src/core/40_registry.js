@@ -262,21 +262,11 @@ MK.remove = function (id, quiet) {
 };
 
 MK.removeTool = function (tool) {
-  var U = MK.util, mark = MK.expr.MARK + tool.id, ctx = MK.makeContext(tool);
+  var U = MK.util, X = MK.expr, ctx = MK.makeContext(tool);
   var fail = function (msg) { return { ok: false, message: tool.name + ": " + msg, created: [] }; };
   if (!ctx.comp) return fail("open a composition, then select the properties or layers to take " + tool.name + " off.");
-  function ours(p) { return p.canSetExpression && String(p.expression || "").split("\n")[0] === mark; }
-  // Every property under group g with this tool's expression, added to out.
-  function walk(g, out) {
-    for (var i = 1; i <= g.numProperties; i++) {
-      var p = g.property(i);
-      if (p instanceof PropertyGroup) walk(p, out);
-      else if (p instanceof Property && ours(p)) out.push(p);
-    }
-    return out;
-  }
-  var props = U.filter(ctx.props, ours);
-  if (!ctx.props.length) for (var l = 0; l < ctx.layers.length; l++) walk(ctx.layers[l], props);
+  var props = U.filter(ctx.props, function (p) { return p.canSetExpression && String(p.expression || "").split("\n")[0] === X.MARK + tool.id; });
+  if (!ctx.props.length) for (var l = 0; l < ctx.layers.length; l++) X.ofTool(ctx.layers[l], tool.id, props);
   if (!props.length) {
     if (ctx.props.length) return fail("the selected properties have no " + tool.name + " to remove.");
     return fail(ctx.layers.length ? "the selected layers have no " + tool.name + " to remove." : "select the properties or layers to take " + tool.name + " off.");
@@ -290,7 +280,7 @@ MK.removeTool = function (tool) {
       layers[layer.index] = layer;
     }
     for (var k in layers) {
-      if (!U.has(layers, k) || walk(layers[k], []).length) continue;
+      if (!U.has(layers, k) || X.ofTool(layers[k], tool.id).length) continue;
       var fx = MK.controls.fx(layers[k]);
       for (var j = fx ? fx.numProperties : 0; j >= 1; j--) {
         if (fx.property(j).name.indexOf(prefix) === 0) {

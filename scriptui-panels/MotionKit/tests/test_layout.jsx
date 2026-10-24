@@ -199,14 +199,15 @@ T.check(js(P([[0, -1], "x", [1.6, 1.4]], 4).spans) === "[[1,1],[1,1],[2,1]]", "b
 
 // ---- options validation
 var O = MotionKit.options, bounce = MotionKit.tools.bounce;
-var v1 = O.validate(bounce, { amplitude: 2, maxJumps: 3.6, hopGravity: "x", gravity: 5000, jumpInOut: true, extra: 1 }, false).values;
-T.check(v1.amplitude === 1 && v1.maxJumps === 4 && v1.hopGravity === 10 && v1.jumpInOut === true && v1.extra === undefined && v1.gravity === undefined, "lenient options clamp, round and default; keys a tool no longer has are dropped");
-var v2 = O.validate(bounce, { amplitude: 2 }, true);
-T.check(v2.errors.length === 1 && /Amplitude must be from 0 to 1/.test(v2.errors[0]), "strict options report the range");
-T.check(!O.save(bounce, { amplitude: -1 }).ok && O.get(bounce).amplitude === 0.7, "invalid options aren't saved");
-T.check(O.save(bounce, { amplitude: "0.5" }).ok && O.get(bounce).amplitude === 0.5, "valid options are saved (text numbers accepted)");
+var v1 = O.validate(bounce, { hopHeight: 500, maxJumps: 3.6, hopTime: "x", amplitude: 0.7, hopGravity: 10, jumpInOut: true, extra: 1 }, false).values;
+T.check(v1.hopHeight === 200 && v1.maxJumps === 4 && v1.hopTime === 0.4 && v1.jumpInOut === true && v1.extra === undefined && v1.amplitude === undefined && v1.hopGravity === undefined,
+  "lenient options clamp, round and default; keys a tool no longer has are dropped");
+var v2 = O.validate(bounce, { hopHeight: 500 }, true);
+T.check(v2.errors.length === 1 && /Amplitude must be from 0 to 200/.test(v2.errors[0]), "strict options report the range");
+T.check(!O.save(bounce, { hopHeight: -1 }).ok && O.get(bounce).hopHeight === 20, "invalid options aren't saved");
+T.check(O.save(bounce, { hopHeight: "35" }).ok && O.get(bounce).hopHeight === 35, "valid options are saved (text numbers accepted)");
 app.settings.saveSetting("MotionKit", "toolOptions", "[1, 2]");
-T.check(O.get(bounce).amplitude === 0.7, "corrupt stored options fall back to defaults");
+T.check(O.get(bounce).hopHeight === 20, "corrupt stored options fall back to defaults");
 
 // ---- registry checks
 var before2 = MotionKit.loadErrors.length;
