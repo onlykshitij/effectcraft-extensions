@@ -61,7 +61,12 @@ function easeStop(prop, i) {
 easeStop(pos, pos.numKeys);
 scl.setInterpolationTypeAtKey(scl.numKeys, KeyframeInterpolationType.HOLD, KeyframeInterpolationType.HOLD);
 T.select(comp, [box], [pos, scl]);
+T.answer = false;
 var still = MotionKit.run("elastic");
-T.check(still.ok && /They stop at the last keyframe/.test(still.message), "eased or Hold last keys: the message says nothing moves after them: " + still.message);
+T.check(still.ok && /They stop at the last keyframe/.test(still.message), "eased or Hold last keys, Linear declined: the message says nothing moves after them: " + still.message);
+T.answer = true;
+var lin = MotionKit.run("elastic");
+T.check(lin.ok && /1 of them stop/.test(lin.message) && /Made one last keyframe arrive Linear/.test(lin.message) && pos.keyInInterpolationType(pos.numKeys) === KeyframeInterpolationType.LINEAR &&
+  scl.keyInInterpolationType(scl.numKeys) === KeyframeInterpolationType.HOLD, "on yes the eased key arrives Linear; the Hold one is left alone: " + lin.message);
 
 T.done();

@@ -95,11 +95,21 @@ function easeStop(prop, i) {
   prop.setInterpolationTypeAtKey(i, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
   prop.setTemporalEaseAtKey(i, z, z);
 }
-// A last key that eases to a stop leaves no speed to bounce with, and the message says so.
-easeStop(ball2.transform.scale, 2);
-T.select(comp, [ball2], [ball2.transform.scale]);
+// A last key that eases to a stop leaves no speed to bounce with. Bounce asks to make it arrive
+// Linear; on "no" nothing moves after it and the message says why.
+var sc2 = ball2.transform.scale;
+easeStop(sc2, 2);
+T.select(comp, [ball2], [sc2]);
+T.answer = false;
 var still = MotionKit.run("bounce");
-T.check(still.ok && /It stops at the last keyframe/.test(still.message) && T.near(ball2.transform.scale.valueAtTime(1.07, false)[0], 150), "an eased last key: no bounce, and the message explains why: " + still.message);
+T.check(still.ok && T.confirms.length === 1 && /eases to a stop/.test(T.confirms[0]) && /It stops at the last keyframe/.test(still.message) && T.near(sc2.valueAtTime(1.07, false)[0], 150),
+  "an eased last key: Bounce asks, and on no there's no bounce and the message explains why: " + still.message);
+T.answer = true;
+var lin = MotionKit.run("bounce");
+T.check(lin.ok && /Made one last keyframe arrive Linear/.test(lin.message) && !/stops/.test(lin.message) && sc2.keyInInterpolationType(2) === KeyframeInterpolationType.LINEAR &&
+  sc2.keyOutInterpolationType(2) === KeyframeInterpolationType.BEZIER && sc2.valueAtTime(1.07, false)[0] > 150.5,
+  "on yes the last key arrives Linear (its out side is left alone) and it bounces: " + sc2.valueAtTime(1.07, false)[0].toFixed(3));
+T.confirms = [];
 T.check(!/stop/.test(r.message), "linear last keys get no such note");
 
 // Expressions Motion Kit didn't write: ask, keep them on "no".
@@ -112,6 +122,26 @@ T.check(kept.ok && /Kept 1/.test(kept.message) && op.expression === "value * 1" 
 T.answer = true;
 MotionKit.run("bounce");
 T.check(op.expression.indexOf("// Motion Kit: bounce") === 0, "and replaced when the user says yes");
+
+// Alt-click (MotionKit.remove): takes Bounce off the selected property; the controls stay while
+// another property on the layer uses them. With only the layer selected it takes off the rest
+// and deletes the controls, leaving other expressions. One undo step.
+T.select(comp, [ball], [pos]);
+var off = MotionKit.remove("bounce");
+T.check(off.ok && pos.expression === "" && rot.expression.indexOf("// Motion Kit: bounce") === 0 && fx.numProperties === 4 && /removed from 1 property\.$/.test(off.message),
+  "Alt-click takes Bounce off the selected property; the controls stay for the others: " + off.message);
+ball.transform.anchorPoint.expression = "value";
+T.select(comp, [ball], []);
+var rest = MotionKit.remove("bounce");
+T.check(rest.ok && rot.expression === "" && op.expression === "" && fx.numProperties === 0 && ball.transform.anchorPoint.expression === "value" && /removed from 2 properties, with its controls/.test(rest.message),
+  "with only the layer selected it takes off the rest and deletes the controls, leaving other expressions: " + rest.message);
+app.executeCommand(app.findMenuCommandId("Undo"));
+T.check(rot.expression.indexOf("// Motion Kit: bounce") === 0 && op.expression.indexOf("// Motion Kit: bounce") === 0 && fx.numProperties === 4, "one Undo brings both back");
+ball.transform.anchorPoint.expression = "";
+T.select(comp, [ball2], [ball2.transform.position]);
+var none = MotionKit.remove("bounce");
+T.check(!none.ok && /the selected properties have no Bounce to remove/.test(none.message), "nothing to remove says so: " + none.message);
+T.check(!MotionKit.remove("elastic").ok, "Elastic's removal leaves Bounce alone (nothing of Elastic's there)");
 
 // One undo step.
 var ball3 = T.solid(comp, "Ball 3", 50, 50);

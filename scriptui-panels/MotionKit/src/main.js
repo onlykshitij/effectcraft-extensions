@@ -10,6 +10,7 @@ if (!MK.api) {
     toolOrder: MK.toolOrder,
     loadErrors: MK.loadErrors,
     run: MK.run,
+    remove: MK.remove,
     callTool: MK.callTool,
     registerTool: MK.registerTool,
     describe: MK.describe,

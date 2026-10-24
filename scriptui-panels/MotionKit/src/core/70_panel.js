@@ -86,6 +86,11 @@ MK.ui.startViews = function (host) {
 MK.ui.dist = function (a, b) { return Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])); };
 // Replaced by tests: how a button opens options, the Layout & Style dialog and the Add list.
 MK.ui.openOptions = function (id) { return MK.optionsDialog.open(id); };
+// "Bounce, Elastic and Loop": the tools Alt-click can remove, for messages.
+MK.ui.removableNames = function () {
+  var n = MK.util.map(MK.util.filter(MK.toolOrder, function (id) { return MK.tools[id].removable; }), function (id) { return MK.tools[id].name; });
+  return n.length > 1 ? n.slice(0, -1).join(", ") + " and " + n[n.length - 1] : n.join("");
+};
 MK.ui.openLayoutDialog = function (panelIndex, tab) { return MK.layoutDialog.open(panelIndex, tab); };
 MK.ui.openAddList = function (panelIndex) {
   var D = MK.ui.buildAddList(panelIndex);
@@ -602,7 +607,8 @@ MK.ui.buildPanel = function (host, index, views) {
       else {
         cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
         cell.helpTip = look.name + " – " + look.description +
-          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + (P.editing ? "\nDrag to reorder." : "");
+          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") +
+          (look.tool && look.tool.removable ? "\nAlt-click removes it from the selected properties or layers." : "") + (P.editing ? "\nDrag to reorder." : "");
         cell.onDraw = paint;
         // What it shows only changes with the settings, which rebuild the panel.
         cell.mkLook = look;
@@ -777,7 +783,7 @@ MK.ui.buildPanel = function (host, index, views) {
       hold(!opt && !!t.mkDrag);
       return;
     }
-    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt };
+    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt, remove: !!e.altKey };
     hold(false);
   }
 
@@ -837,15 +843,18 @@ MK.ui.buildPanel = function (host, index, views) {
       if (options && P.widgets[d.from].onShift) P.widgets[d.from].onShift();
       return;
     }
-    P.activate(d.from, options);
+    P.activate(d.from, options, d.remove || !!e.altKey);
   }
-  // Runs button i (or opens its options).
-  P.activate = function (i, options) {
+  // Runs button i, opens its options, or (remove: Alt-click) takes what it wrote off the
+  // selection. Alt-click on a tool that can't do that explains instead of running it.
+  P.activate = function (i, options, remove) {
     var item = P.items()[i];
     if (!item) return null;
-    var d = MK.describe(item.id, P.state.library), r = null;
+    var d = MK.describe(item.id, P.state.library), r = null, tool = MK.tools[item.id];
     if (d.missing) MK.prompts.alert("\"" + item.id + "\": " + d.description);
-    else if (options && MK.tools[item.id]) r = MK.ui.openOptions(item.id);
+    else if (remove && tool && tool.removable) r = MK.remove(item.id);
+    else if (remove) MK.prompts.alert(d.name + ": Alt-click removes what a tool added, and only " + MK.ui.removableNames() + " can do that.");
+    else if (options && tool) r = MK.ui.openOptions(item.id);
     else r = MK.run(item.id);
     P.refresh();
     return r;

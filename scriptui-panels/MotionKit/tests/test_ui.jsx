@@ -163,6 +163,15 @@ T.check(opened.pop() === "bounce", "Shift-click opens the options");
 T.mouse(W1, P1.cells[1], "mousedown", 10, 10, { button: 2 });
 T.mouse(W1, P1.cells[1], "mouseup", 10, 10, { button: 2 });
 T.check(opened.pop() === "loop", "right-click opens the options");
+// Alt-click on Bounce, Elastic or Loop takes what they wrote off the selection (here there's no
+// comp, so it says what to select); on any other tool it explains instead of running it.
+T.mouse(W1, P1.cells[0], "mousedown", 10, 10, { altKey: true });
+T.mouse(W1, P1.cells[0], "mouseup", 10, 10, { altKey: true });
+T.check(/^Elastic: open a composition, then select the properties or layers to take Elastic off/.test(T.lastAlert()), "Alt-click on Elastic removes instead of running: " + T.lastAlert());
+T.check(/Alt-click removes it/.test(P1.cells[0].helpTip) && !/Alt-click/.test(P1.cells[3].helpTip), "removable tools say so in their help tip");
+T.mouse(W1, P1.cells[3], "mousedown", 10, 10, { altKey: true });
+T.mouse(W1, P1.cells[3], "mouseup", 10, 10, { altKey: true });
+T.check(/^Ease Keyframes: Alt-click removes what a tool added, and only Bounce, Elastic and Loop In\/Out can do that/.test(T.lastAlert()), "Alt-click on another tool explains instead of running it: " + T.lastAlert());
 // A button for a tool this version doesn't have (a layout from a newer version).
 L.save(L.addItem(L.get(), 0, "futureTool"));
 MotionKit.__tick(P1.key);

@@ -30,6 +30,7 @@
     id: "loop",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "Repeats the keyframes before the first key, after the last, or both.",
     icon: [{ d: "A12 12 7 -60 210", w: 1.8 }, { d: HEAD, fill: "accent" }],
     options: [

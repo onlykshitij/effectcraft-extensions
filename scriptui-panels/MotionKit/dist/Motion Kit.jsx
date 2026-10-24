@@ -34,7 +34,31 @@ MK.fail = function (message) { throw new MK.UserError(message); };
 // The prompts tools use. Tests replace them to answer questions without a person.
 MK.prompts = {
   alert: function (msg) { alert(msg, MK.NAME); },
-  confirm: function (msg) { return confirm(msg); }
+  // EffectCraft's confirm() shows the question as a notice and answers yes, so there it asks in
+  // a dialog (the message wrapped by hand: EffectCraft's static text doesn't wrap).
+  confirm: function (msg) {
+    if (!MK.util.EFFECTCRAFT) return confirm(msg);
+    var w = new Window("dialog", MK.NAME), yes = false, words = String(msg).split(" "), line = "";
+    w.orientation = "column";
+    w.alignChildren = ["left", "top"];
+    for (var i = 0; i <= words.length; i++) {
+      if (i < words.length && (line + " " + words[i]).length <= 64) line = line ? line + " " + words[i] : words[i];
+      else {
+        if (line) w.add("statictext", undefined, line);
+        line = i < words.length ? words[i] : "";
+      }
+    }
+    var row = w.add("group");
+    row.alignment = ["right", "top"];
+    var no = row.add("button", undefined, "No", { name: "cancel" });
+    var ok = row.add("button", undefined, "Yes", { name: "ok" });
+    ok.onClick = function () { yes = true; w.close(1); };
+    no.onClick = function () { w.close(2); };
+    w.defaultElement = ok;
+    w.cancelElement = no;
+    w.show();
+    return yes;
+  }
 };
 
 MK.util = (function () {
@@ -862,13 +886,15 @@ MK.expr = (function () {
   X.set = function (prop, toolId, body) { prop.expression = X.make(toolId, body); };
   // "Bounce added to 2 properties. Skipped 1 without two keyframes. Kept 1 existing expression."
   // resting: how many of the applied properties stop at their last keyframe (MK.keys.atRest),
-  // for tools that carry the arriving speed on.
-  X.report = function (toolName, applied, invalid, kept, needs, resting) {
+  // for tools that carry the arriving speed on; linear: how many last keyframes were made to
+  // arrive Linear (MK.keys.offerLinearArrival).
+  X.report = function (toolName, applied, invalid, kept, needs, resting, linear) {
     var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties.");
     if (invalid) s += " Skipped " + invalid + " without " + needs + ".";
     if (kept) s += " Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions.");
     if (resting) s += " " + (resting === applied ? (applied === 1 ? "It stops" : "They stop") : resting + " of them stop") +
       " at the last keyframe (eased or Hold), so nothing moves after it: make that keyframe Linear or ease it less.";
+    if (linear) s += " Made " + (linear === 1 ? "one last keyframe" : linear + " last keyframes") + " arrive Linear.";
     return s;
   };
   // decide() then set() on each: body is a string or function(prop) -> string.
@@ -1076,6 +1102,20 @@ MK.keys = (function () {
     var e = arriving ? prop.keyInTemporalEase(i) : prop.keyOutTemporalEase(i);
     for (var k = 0; k < e.length; k++) if (Math.abs(e[k].speed) > 1e-6) return false;
     return true;
+  };
+  // Asks to make the last keyframe of each property that eases to a stop (Bezier, speed 0)
+  // arrive Linear, so a tool that carries the arriving speed on has one to use. Hold arrivals
+  // are left alone: the value jumps there. Returns how many keyframes it changed.
+  K.offerLinearArrival = function (props, toolName) {
+    var eased = MK.util.filter(props, function (p) { return p.keyInInterpolationType(p.numKeys) === KeyframeInterpolationType.BEZIER && K.atRest(p, p.numKeys, true); });
+    if (!eased.length) return 0;
+    var what = eased.length === 1 ? MK.sel.label(eased[0]) + " eases to a stop at its last keyframe" : eased.length + " properties ease to a stop at their last keyframe";
+    if (!MK.prompts.confirm(toolName + ": " + what + ", so there's no speed left to carry on. Make that keyframe arrive Linear?")) return 0;
+    for (var i = 0; i < eased.length; i++) {
+      var n = eased[i].numKeys;
+      eased[i].setInterpolationTypeAtKey(n, KeyframeInterpolationType.LINEAR, eased[i].keyOutInterpolationType(n));
+    }
+    return eased.length;
   };
   K.readAll = function (prop) {
     var out = [];
@@ -1599,6 +1639,9 @@ MK.registerTool = function (def) {
   var tool = {
     id: d.id, name: d.name, category: d.category, description: d.description, icon: d.icon,
     options: d.options || [], run: d.run, needsComp: d.needsComp !== false, dot: d.dot || null,
+    // Alt-click takes what the tool wrote off the selection (MK.remove): tools whose whole
+    // result is marked expressions on the selected properties and "<Tool> – …" controls.
+    removable: !!d.removable,
     openOptions: d.openOptions || null, api: d.api || {},
     kind: widget ? "widget" : "tool", span: widget ? [Math.round(d.span[0]), Math.round(d.span[1])] : [1, 1], build: widget ? d.build : null
   };
@@ -1672,6 +1715,65 @@ MK.runTool = function (id, options) {
     app.endUndoGroup();
   }
   return r;
+};
+
+// Alt-click on a removable tool: takes the expressions tool `id` wrote off the selected
+// properties (with none selected, off every property of the selected layers), then deletes its
+// "<Tool> – …" controls from the layers where none of them is left. One undo step. Expressions
+// Motion Kit didn't write, or another tool wrote, stay.
+MK.remove = function (id, quiet) {
+  var r, tool = MK.tools[id];
+  try {
+    r = MK.removeTool(tool);
+  } catch (e) {
+    r = { ok: false, message: (tool ? tool.name : id) + ": removing failed: " + MK.util.errText(e), created: [] };
+  }
+  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  return r;
+};
+
+MK.removeTool = function (tool) {
+  var U = MK.util, mark = MK.expr.MARK + tool.id, ctx = MK.makeContext(tool);
+  var fail = function (msg) { return { ok: false, message: tool.name + ": " + msg, created: [] }; };
+  if (!ctx.comp) return fail("open a composition, then select the properties or layers to take " + tool.name + " off.");
+  function ours(p) { return p.canSetExpression && String(p.expression || "").split("\n")[0] === mark; }
+  // Every property under group g with this tool's expression, added to out.
+  function walk(g, out) {
+    for (var i = 1; i <= g.numProperties; i++) {
+      var p = g.property(i);
+      if (p instanceof PropertyGroup) walk(p, out);
+      else if (p instanceof Property && ours(p)) out.push(p);
+    }
+    return out;
+  }
+  var props = U.filter(ctx.props, ours);
+  if (!ctx.props.length) for (var l = 0; l < ctx.layers.length; l++) walk(ctx.layers[l], props);
+  if (!props.length) {
+    if (ctx.props.length) return fail("the selected properties have no " + tool.name + " to remove.");
+    return fail(ctx.layers.length ? "the selected layers have no " + tool.name + " to remove." : "select the properties or layers to take " + tool.name + " off.");
+  }
+  var layers = {}, controls = 0, prefix = MK.controls.name(tool.name, "");
+  app.beginUndoGroup(MK.NAME + ": Remove " + tool.name);
+  try {
+    for (var i = 0; i < props.length; i++) {
+      props[i].expression = "";
+      var layer = MK.sel.layerOf(props[i]);
+      layers[layer.index] = layer;
+    }
+    for (var k in layers) {
+      if (!U.has(layers, k) || walk(layers[k], []).length) continue;
+      var fx = MK.controls.fx(layers[k]);
+      for (var j = fx ? fx.numProperties : 0; j >= 1; j--) {
+        if (fx.property(j).name.indexOf(prefix) === 0) {
+          fx.property(j).remove();
+          controls++;
+        }
+      }
+    }
+  } finally {
+    app.endUndoGroup();
+  }
+  return { ok: true, message: tool.name + " removed from " + props.length + (props.length === 1 ? " property" : " properties") + (controls ? ", with its controls." : "."), created: [] };
 };
 
 // Runs tool `id`'s code inside another tool's or widget's run, with the same ctx (so one undo
@@ -2260,6 +2362,11 @@ MK.ui.startViews = function (host) {
 MK.ui.dist = function (a, b) { return Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])); };
 // Replaced by tests: how a button opens options, the Layout & Style dialog and the Add list.
 MK.ui.openOptions = function (id) { return MK.optionsDialog.open(id); };
+// "Bounce, Elastic and Loop": the tools Alt-click can remove, for messages.
+MK.ui.removableNames = function () {
+  var n = MK.util.map(MK.util.filter(MK.toolOrder, function (id) { return MK.tools[id].removable; }), function (id) { return MK.tools[id].name; });
+  return n.length > 1 ? n.slice(0, -1).join(", ") + " and " + n[n.length - 1] : n.join("");
+};
 MK.ui.openLayoutDialog = function (panelIndex, tab) { return MK.layoutDialog.open(panelIndex, tab); };
 MK.ui.openAddList = function (panelIndex) {
   var D = MK.ui.buildAddList(panelIndex);
@@ -2776,7 +2883,8 @@ MK.ui.buildPanel = function (host, index, views) {
       else {
         cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
         cell.helpTip = look.name + " – " + look.description +
-          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + (P.editing ? "\nDrag to reorder." : "");
+          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") +
+          (look.tool && look.tool.removable ? "\nAlt-click removes it from the selected properties or layers." : "") + (P.editing ? "\nDrag to reorder." : "");
         cell.onDraw = paint;
         // What it shows only changes with the settings, which rebuild the panel.
         cell.mkLook = look;
@@ -2951,7 +3059,7 @@ MK.ui.buildPanel = function (host, index, views) {
       hold(!opt && !!t.mkDrag);
       return;
     }
-    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt };
+    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt, remove: !!e.altKey };
     hold(false);
   }
 
@@ -3011,15 +3119,18 @@ MK.ui.buildPanel = function (host, index, views) {
       if (options && P.widgets[d.from].onShift) P.widgets[d.from].onShift();
       return;
     }
-    P.activate(d.from, options);
+    P.activate(d.from, options, d.remove || !!e.altKey);
   }
-  // Runs button i (or opens its options).
-  P.activate = function (i, options) {
+  // Runs button i, opens its options, or (remove: Alt-click) takes what it wrote off the
+  // selection. Alt-click on a tool that can't do that explains instead of running it.
+  P.activate = function (i, options, remove) {
     var item = P.items()[i];
     if (!item) return null;
-    var d = MK.describe(item.id, P.state.library), r = null;
+    var d = MK.describe(item.id, P.state.library), r = null, tool = MK.tools[item.id];
     if (d.missing) MK.prompts.alert("\"" + item.id + "\": " + d.description);
-    else if (options && MK.tools[item.id]) r = MK.ui.openOptions(item.id);
+    else if (remove && tool && tool.removable) r = MK.remove(item.id);
+    else if (remove) MK.prompts.alert(d.name + ": Alt-click removes what a tool added, and only " + MK.ui.removableNames() + " can do that.");
+    else if (options && tool) r = MK.ui.openOptions(item.id);
     else r = MK.run(item.id);
     P.refresh();
     return r;
@@ -3864,6 +3975,7 @@ MK.layoutDialog = (function () {
     id: "bounce",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "After the last keyframe the value hops past it and settles like a bouncing ball.",
     // Three shrinking hop arcs on a ground line (the ball).
     icon: [
@@ -3882,7 +3994,7 @@ MK.layoutDialog = (function () {
     run: function (ctx, o) {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return MK.sel.isNumeric(p) && p.canSetExpression; });
       if (!props.length) ctx.fail("select one or more properties with at least two keyframes (numbers, points or colours).");
-      var d = MK.expr.decide(ctx, props), resting = 0;
+      var d = MK.expr.decide(ctx, props), linear = MK.keys.offerLinearArrival(d.apply, NAME), resting = 0;
       for (var i = 0; i < d.apply.length; i++) {
         var layer = MK.sel.layerOf(d.apply[i]);
         if (MK.keys.atRest(d.apply[i], d.apply[i].numKeys, true)) resting++;
@@ -3892,7 +4004,7 @@ MK.layoutDialog = (function () {
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "bounce", BODY);
       }
-      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value", resting));
+      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value", resting, linear));
     }
   });
 })();
@@ -4377,6 +4489,7 @@ MK.layoutDialog = (function () {
     id: "elastic",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "After the last keyframe the value overshoots and wobbles back like a spring.",
     // A zigzag spring off a wall (the weight at its end).
     icon: [
@@ -4393,7 +4506,7 @@ MK.layoutDialog = (function () {
     run: function (ctx, o) {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return MK.sel.isNumeric(p) && p.canSetExpression; });
       if (!props.length) ctx.fail("select one or more properties with at least two keyframes (numbers, points or colours).");
-      var d = MK.expr.decide(ctx, props), resting = 0;
+      var d = MK.expr.decide(ctx, props), linear = MK.keys.offerLinearArrival(d.apply, NAME), resting = 0;
       for (var i = 0; i < d.apply.length; i++) {
         var layer = MK.sel.layerOf(d.apply[i]);
         if (MK.keys.atRest(d.apply[i], d.apply[i].numKeys, true)) resting++;
@@ -4403,7 +4516,7 @@ MK.layoutDialog = (function () {
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "elastic", BODY);
       }
-      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value", resting));
+      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value", resting, linear));
     }
   });
 })();
@@ -4539,6 +4652,7 @@ MK.layoutDialog = (function () {
     id: "loop",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "Repeats the keyframes before the first key, after the last, or both.",
     icon: [{ d: "A12 12 7 -60 210", w: 1.8 }, { d: HEAD, fill: "accent" }],
     options: [
@@ -7484,6 +7598,7 @@ if (!MK.api) {
     toolOrder: MK.toolOrder,
     loadErrors: MK.loadErrors,
     run: MK.run,
+    remove: MK.remove,
     callTool: MK.callTool,
     registerTool: MK.registerTool,
     describe: MK.describe,

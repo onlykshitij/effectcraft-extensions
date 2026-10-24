@@ -22,6 +22,7 @@ All panels share one layout, so a change made in one shows up in the others. `di
 
 - **Run:** click a button to run its tool on the active comp's selection. Each run is one undo step. Buttons show only their icon; hover for the tool's name and what it does.
 - **Options:** Shift-click (or right-click) a button for its options. Options are remembered, and a plain click uses them.
+- **Remove:** Alt-click Bounce, Elastic or Loop In/Out to take its expressions off the selected properties, or, with no property selected, off the selected layers. Its controls go too once nothing on the layer uses them. Your own expressions and other tools' expressions stay. It's one undo step.
 - **Rearrange:** click the pencil in a panel's header for edit mode. Every cell then gets a dashed outline and a ✕ that removes it, a trailing **+** cell adds tools and widgets the panel doesn't have yet, and dragging a cell reorders it. Click the pencil again when you're done. Out of edit mode, dragging never moves a cell, so a slider drag stays a slider drag. To move buttons between panels, use the ⚙ button's Layout & Style dialog, because ScriptUI can't drag between windows.
 - **Views:** the view list (under the title in `Motion Kit.jsx`) switches the panel between the combined view, the four categories and the menu.
 - **Layouts:** the layout list in the header switches every panel to another named layout.
@@ -54,8 +55,8 @@ The Motion Kit panel has every tool except Ease Copy and Move Anchor Point, whic
 
 | Tool | What it does |
 |---|---|
-| Bounce | After the last keyframe, the value bounces like a ball. Controls: Amplitude, Hop Gravity, Max Jumps and Jump In/Out (also before the first key). Hop Gravity is relative to the keyframes' range, so the same value gives Position, Scale and Rotation the same bounce. |
-| Elastic | A decaying spring overshoot after the last keyframe. Controls: Amplitude, Frequency, Decay and Jump In/Out. |
+| Bounce | After the last keyframe, the value bounces like a ball. Controls: Amplitude (the share of speed each hop keeps; 1 never slows down), Hop Gravity, Max Jumps and Jump In/Out (also before the first key). Hop Gravity is relative to the keyframes' range, so the same value gives Position, Scale and Rotation the same bounce. The bounce needs speed at the last keyframe: when that keyframe eases to a stop, Bounce offers to make it arrive Linear. |
+| Elastic | A decaying spring overshoot after the last keyframe. Controls: Amplitude, Frequency, Decay and Jump In/Out. Like Bounce, it offers to make an eased last keyframe arrive Linear. |
 | Loop In/Out | Adds a cycle, pingpong, offset or continue loop before, after or on both sides of the keyframes. |
 | Ease Keyframes | Sets the ease on the selected keys from a draggable speed-curve editor or presets. |
 | Ease Copy | Copies a key's value, ease, interpolation and expression, then pastes your choice of them onto the selected keys. |
@@ -123,6 +124,7 @@ Layouts saved by Motion Kit 0.1 had four panels. They load with the Motion Kit p
 - **No join style.** ScriptUI pens have no round joins, so icons draw a dot on every corner.
 - **Every event redraws the panel.** EffectCraft re-runs a script panel's drawing, lays it out and serialises it after every event the script receives. So Motion Kit listens to pointer movement only during a drag, and checks for changes made in other panels every 3 seconds and on every click.
 - **The hover highlight is EffectCraft's own button.** A highlight drawn by the script would cost a full redraw each time the pointer crosses a button. Instead, each button draws EffectCraft's native button underneath and covers it with its own colour (60 % opaque at the default strength), so EffectCraft lightens it under the pointer without telling the script. It adds about 5 ms to each redraw of the Motion Kit panel (19 to 24 ms). The anchor squares are too bright to cover that way, so their highlight is a ring around the square. The sliders have none, and edit mode turns it off for the cells.
+- **Questions use Motion Kit's own dialog.** EffectCraft's `confirm()` shows the question as a notice and always answers yes, so Motion Kit asks in its own Yes/No dialog instead.
 - **Colours are pre-corrected.** EffectCraft 0.16 and earlier draw script colours too bright ([storytold/effectcraft#2272](https://github.com/storytold/effectcraft/pull/2272)), so Motion Kit corrects them when it runs in EffectCraft.
 - **Deep duplicate needs EffectCraft 0.16 or later.** Duplicate Comp's Deep option needs `replaceSource`. On older versions it makes a plain duplicate and says so.
 - **Some tools overwrite the clipboard.** Unprecomp and Merge Shapes copy through EffectCraft's clipboard.

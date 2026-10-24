@@ -30,6 +30,7 @@
     id: "elastic",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "After the last keyframe the value overshoots and wobbles back like a spring.",
     // A zigzag spring off a wall (the weight at its end).
     icon: [
@@ -46,7 +47,7 @@
     run: function (ctx, o) {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return MK.sel.isNumeric(p) && p.canSetExpression; });
       if (!props.length) ctx.fail("select one or more properties with at least two keyframes (numbers, points or colours).");
-      var d = MK.expr.decide(ctx, props), resting = 0;
+      var d = MK.expr.decide(ctx, props), linear = MK.keys.offerLinearArrival(d.apply, NAME), resting = 0;
       for (var i = 0; i < d.apply.length; i++) {
         var layer = MK.sel.layerOf(d.apply[i]);
         if (MK.keys.atRest(d.apply[i], d.apply[i].numKeys, true)) resting++;
@@ -56,7 +57,7 @@
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "elastic", BODY);
       }
-      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value", resting));
+      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value", resting, linear));
     }
   });
 })();

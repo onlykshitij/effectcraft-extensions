@@ -168,6 +168,9 @@ MK.registerTool = function (def) {
   var tool = {
     id: d.id, name: d.name, category: d.category, description: d.description, icon: d.icon,
     options: d.options || [], run: d.run, needsComp: d.needsComp !== false, dot: d.dot || null,
+    // Alt-click takes what the tool wrote off the selection (MK.remove): tools whose whole
+    // result is marked expressions on the selected properties and "<Tool> – …" controls.
+    removable: !!d.removable,
     openOptions: d.openOptions || null, api: d.api || {},
     kind: widget ? "widget" : "tool", span: widget ? [Math.round(d.span[0]), Math.round(d.span[1])] : [1, 1], build: widget ? d.build : null
   };
@@ -241,6 +244,65 @@ MK.runTool = function (id, options) {
     app.endUndoGroup();
   }
   return r;
+};
+
+// Alt-click on a removable tool: takes the expressions tool `id` wrote off the selected
+// properties (with none selected, off every property of the selected layers), then deletes its
+// "<Tool> – …" controls from the layers where none of them is left. One undo step. Expressions
+// Motion Kit didn't write, or another tool wrote, stay.
+MK.remove = function (id, quiet) {
+  var r, tool = MK.tools[id];
+  try {
+    r = MK.removeTool(tool);
+  } catch (e) {
+    r = { ok: false, message: (tool ? tool.name : id) + ": removing failed: " + MK.util.errText(e), created: [] };
+  }
+  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  return r;
+};
+
+MK.removeTool = function (tool) {
+  var U = MK.util, mark = MK.expr.MARK + tool.id, ctx = MK.makeContext(tool);
+  var fail = function (msg) { return { ok: false, message: tool.name + ": " + msg, created: [] }; };
+  if (!ctx.comp) return fail("open a composition, then select the properties or layers to take " + tool.name + " off.");
+  function ours(p) { return p.canSetExpression && String(p.expression || "").split("\n")[0] === mark; }
+  // Every property under group g with this tool's expression, added to out.
+  function walk(g, out) {
+    for (var i = 1; i <= g.numProperties; i++) {
+      var p = g.property(i);
+      if (p instanceof PropertyGroup) walk(p, out);
+      else if (p instanceof Property && ours(p)) out.push(p);
+    }
+    return out;
+  }
+  var props = U.filter(ctx.props, ours);
+  if (!ctx.props.length) for (var l = 0; l < ctx.layers.length; l++) walk(ctx.layers[l], props);
+  if (!props.length) {
+    if (ctx.props.length) return fail("the selected properties have no " + tool.name + " to remove.");
+    return fail(ctx.layers.length ? "the selected layers have no " + tool.name + " to remove." : "select the properties or layers to take " + tool.name + " off.");
+  }
+  var layers = {}, controls = 0, prefix = MK.controls.name(tool.name, "");
+  app.beginUndoGroup(MK.NAME + ": Remove " + tool.name);
+  try {
+    for (var i = 0; i < props.length; i++) {
+      props[i].expression = "";
+      var layer = MK.sel.layerOf(props[i]);
+      layers[layer.index] = layer;
+    }
+    for (var k in layers) {
+      if (!U.has(layers, k) || walk(layers[k], []).length) continue;
+      var fx = MK.controls.fx(layers[k]);
+      for (var j = fx ? fx.numProperties : 0; j >= 1; j--) {
+        if (fx.property(j).name.indexOf(prefix) === 0) {
+          fx.property(j).remove();
+          controls++;
+        }
+      }
+    }
+  } finally {
+    app.endUndoGroup();
+  }
+  return { ok: true, message: tool.name + " removed from " + props.length + (props.length === 1 ? " property" : " properties") + (controls ? ", with its controls." : "."), created: [] };
 };
 
 // Runs tool `id`'s code inside another tool's or widget's run, with the same ctx (so one undo

@@ -154,13 +154,15 @@ MK.expr = (function () {
   X.set = function (prop, toolId, body) { prop.expression = X.make(toolId, body); };
   // "Bounce added to 2 properties. Skipped 1 without two keyframes. Kept 1 existing expression."
   // resting: how many of the applied properties stop at their last keyframe (MK.keys.atRest),
-  // for tools that carry the arriving speed on.
-  X.report = function (toolName, applied, invalid, kept, needs, resting) {
+  // for tools that carry the arriving speed on; linear: how many last keyframes were made to
+  // arrive Linear (MK.keys.offerLinearArrival).
+  X.report = function (toolName, applied, invalid, kept, needs, resting, linear) {
     var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties.");
     if (invalid) s += " Skipped " + invalid + " without " + needs + ".";
     if (kept) s += " Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions.");
     if (resting) s += " " + (resting === applied ? (applied === 1 ? "It stops" : "They stop") : resting + " of them stop") +
       " at the last keyframe (eased or Hold), so nothing moves after it: make that keyframe Linear or ease it less.";
+    if (linear) s += " Made " + (linear === 1 ? "one last keyframe" : linear + " last keyframes") + " arrive Linear.";
     return s;
   };
   // decide() then set() on each: body is a string or function(prop) -> string.
@@ -368,6 +370,20 @@ MK.keys = (function () {
     var e = arriving ? prop.keyInTemporalEase(i) : prop.keyOutTemporalEase(i);
     for (var k = 0; k < e.length; k++) if (Math.abs(e[k].speed) > 1e-6) return false;
     return true;
+  };
+  // Asks to make the last keyframe of each property that eases to a stop (Bezier, speed 0)
+  // arrive Linear, so a tool that carries the arriving speed on has one to use. Hold arrivals
+  // are left alone: the value jumps there. Returns how many keyframes it changed.
+  K.offerLinearArrival = function (props, toolName) {
+    var eased = MK.util.filter(props, function (p) { return p.keyInInterpolationType(p.numKeys) === KeyframeInterpolationType.BEZIER && K.atRest(p, p.numKeys, true); });
+    if (!eased.length) return 0;
+    var what = eased.length === 1 ? MK.sel.label(eased[0]) + " eases to a stop at its last keyframe" : eased.length + " properties ease to a stop at their last keyframe";
+    if (!MK.prompts.confirm(toolName + ": " + what + ", so there's no speed left to carry on. Make that keyframe arrive Linear?")) return 0;
+    for (var i = 0; i < eased.length; i++) {
+      var n = eased[i].numKeys;
+      eased[i].setInterpolationTypeAtKey(n, KeyframeInterpolationType.LINEAR, eased[i].keyOutInterpolationType(n));
+    }
+    return eased.length;
   };
   K.readAll = function (prop) {
     var out = [];
