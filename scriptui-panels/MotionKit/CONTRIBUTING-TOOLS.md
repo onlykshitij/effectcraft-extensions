@@ -219,7 +219,8 @@ These were found while building the core, in EffectCraft 0.14.
 
 - Keyframe times snap to whole frames: `setValueAtTime(1.5, v)` at 25 fps lands on 1.48. Use frame times in tests.
 - 2D layers report Position, Anchor Point and Scale with three values (`[x, y, 0]`), and Scale's eases have three entries. Setting two values works.
-- New keys from `setValueAtTime` start selected. `setSelectedAtKey(i, false)` replaces the comp's key selection with that property's other selected keys.
+- New keys from `setValueAtTime` start unselected (EffectCraft 0.14). Selecting a property selects all its keys, and `setSelectedAtKey(i, true)` also selects the property.
+- Write keys with `MK.keys.write`, or `MK.keys.writeAll` for a run: it sets roving after every key exists, because a key only roves between two others. Both set the ease before the interpolation types, since `setTemporalEaseAtKey` switches both sides to Bezier.
 - `sourceRectAtTime` on a shape layer has a 1 px margin and whole-pixel width and height, and a shape with no fill or stroke has an empty rectangle.
 - Expression results aren't clamped: Opacity can read 120.
 - Headless, a modal `dialog.show()` ends the script run there, so build dialogs without showing them in tests (`MK.optionsDialog.build`, `MK.layoutDialog.build`). `confirm()` answers yes, file writes are refused (the error names Preferences ▸ Scripting & Expressions ▸ Allow Scripts to Write Files and Access Network), `File.saveDialog` / `openDialog` return null, and `app.scheduleTask` tasks don't run.

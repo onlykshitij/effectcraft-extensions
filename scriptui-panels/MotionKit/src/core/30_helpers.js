@@ -387,13 +387,14 @@ MK.keys = (function () {
     if (want("value") || !prop.numKeys) prop.setValueAtTime(t, k.value);
     else prop.addKey(t);
     var i = prop.nearestKeyIndex(t);
-    if (want("interp") && k.inInterp !== undefined && prop.isInterpolationTypeValid(k.inInterp) && prop.isInterpolationTypeValid(k.outInterp)) {
-      prop.setInterpolationTypeAtKey(i, k.inInterp, k.outInterp);
-    }
     if (want("ease") && k.inEase && k.outEase) {
       K.setEase(prop, i, k.inEase, k.outEase);
       if (k.continuous !== undefined) prop.setTemporalContinuousAtKey(i, k.continuous);
       if (k.autoBezier !== undefined) prop.setTemporalAutoBezierAtKey(i, k.autoBezier);
+    }
+    // After the ease: EffectCraft's setTemporalEaseAtKey switches both sides to Bezier.
+    if (want("interp") && k.inInterp !== undefined && prop.isInterpolationTypeValid(k.inInterp) && prop.isInterpolationTypeValid(k.outInterp)) {
+      prop.setInterpolationTypeAtKey(i, k.inInterp, k.outInterp);
     }
     if (want("spatial") && k.spatial && prop.isSpatial && k.inTangent) {
       prop.setSpatialTangentsAtKey(i, k.inTangent, k.outTangent);
@@ -403,6 +404,16 @@ MK.keys = (function () {
     // Roving only applies between other keys; EffectCraft refuses it elsewhere.
     if (want("roving") && k.roving) try { prop.setRovingAtKey(i, true); } catch (e) {}
     return i;
+  };
+  // Writes keys read with K.read, each at newTime(key) (default its own time). Roving is set once
+  // all are written, since a key only roves between two others. Returns the count.
+  K.writeAll = function (prop, ks, newTime) {
+    var at = function (k) { return newTime ? newTime(k) : k.time; };
+    for (var j = 0; j < ks.length; j++) K.write(prop, ks[j], at(ks[j]), { roving: false });
+    for (var r = 0; r < ks.length; r++) {
+      if (ks[r].roving) try { prop.setRovingAtKey(prop.nearestKeyIndex(at(ks[r])), true); } catch (e) {}
+    }
+    return ks.length;
   };
   // Removes keys by 1-based index (any order).
   K.remove = function (prop, indices) {

@@ -41,20 +41,22 @@ for (var q = 0; q < 4; q++) {
   }
 }
 T.check(drawn && texts, "every button draws a background, an icon and its name");
-var look = MotionKit.ui.look({ id: "easeKeys" }, def.panels[0].style);
+var look = MotionKit.ui.look({ id: "futureTool" }, def.panels[0].style);
 T.check(look.missing && look.fg === "#8A8A8A" && look.icon === MotionKit.helpers.icons.builtin.missing, "a tool that isn't installed draws as the grey \"?\" button");
-T.check(/not available/i.test(P1.cells[3].helpTip) && /Shift-click/.test(P1.cells[0].helpTip), "help tips: description, options hint, missing explanation");
+T.check(/not available/i.test(MotionKit.describe("futureTool").description) && /Shift-click/.test(P1.cells[0].helpTip), "help tips: description, options hint, missing explanation");
 
 var menu = $.evalFile(MKT_DIR + "/dist/Motion Kit Menu.jsx");
 var M = menu.mkPanel;
-T.check(M && M.catList.items.length === 5 && M.toolList.items.length === 3 && M.ids.join(",") === "bounce,elastic,loop", "menu panel: categories and the Animate tools");
+// The registered tools of a category, in registration order.
+function catIds(cat) { return U.map(U.filter(MotionKit.catalog(), function (x) { return x.category === cat; }), function (x) { return x.id; }).join(","); }
+T.check(M && M.catList.items.length === 5 && M.toolList.items.length === M.ids.length && M.ids.join(",") === catIds("Animate"), "menu panel: categories and the Animate tools (" + M.ids.join(",") + ")");
 M.catList.selection = 1;
 M.catList.notify("onChange");
-T.check(M.ids.join(",") === "parentNull" && M.optBtn.enabled, "menu panel: Rig lists Add Parent Null");
+T.check(M.ids.join(",") === catIds("Rig") && M.optBtn.enabled, "menu panel: Rig lists the Rig tools");
 M.runBtn.notify("onClick");
 T.check(/open a composition first/.test(T.lastAlert()), "menu Run runs the tool (no comp: " + T.lastAlert() + ")");
 M.optBtn.notify("onClick");
-T.check(opened.pop() === "parentNull", "menu Options opens the tool's options");
+T.check(opened.pop() === M.ids[0], "menu Options opens the tool's options");
 T.check($.evalFile(MKT_DIR + "/dist/motionkit-lib.jsx") === null, "motionkit-lib.jsx builds no UI");
 
 // ---- mouse input on panel 1
@@ -109,12 +111,19 @@ T.check(opened.pop() === "bounce", "Shift-click opens the options");
 T.mouse(W1, P1.cells[1], "mousedown", 10, 10, { button: 2 });
 T.mouse(W1, P1.cells[1], "mouseup", 10, 10, { button: 2 });
 T.check(opened.pop() === "loop", "right-click opens the options");
-T.mouse(W1, P1.cells[3], "mousedown", 10, 10);
-T.mouse(W1, P1.cells[3], "mouseup", 10, 10);
-T.check(/^"easeKeys": Not available/.test(T.lastAlert()), "clicking a missing tool explains it");
+// A button for a tool this version doesn't have (a layout from a newer version).
+L.save(L.addItem(L.get(), 0, "futureTool"));
+MotionKit.__tick(P1.key);
+var miss = P1.cells.length - 1;
+T.check(P1.cells[miss].mkId === "futureTool" && /not available/i.test(P1.cells[miss].helpTip), "a missing tool's button explains itself in its help tip");
+T.mouse(W1, P1.cells[miss], "mousedown", 10, 10);
+T.mouse(W1, P1.cells[miss], "mouseup", 10, 10);
+T.check(/^"futureTool": Not available/.test(T.lastAlert()), "clicking a missing tool explains it");
 T.mouse(W1, P1.cells[0], "mousedown", 10, 10);
 T.mouse(W1, P1.cells[1], "mouseup", 10, 10);
-T.check(opened.length === 0 && /^"easeKeys"/.test(T.lastAlert()), "pressing one button and releasing on another does nothing");
+T.check(opened.length === 0 && /^"futureTool"/.test(T.lastAlert()), "pressing one button and releasing on another does nothing");
+L.save(L.removeItem(L.get(), 0, miss));
+MotionKit.__tick(P1.key);
 P1.gear.notify("onClick");
 T.check(dialogs.length === 1 && dialogs[0][0] === 0, "⚙ opens Layout & Style for this panel");
 
