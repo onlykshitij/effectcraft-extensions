@@ -216,11 +216,13 @@ MK.toResult = function (r, ctx) {
 // Runs a tool or library item like a button click: saved options, overridden by `options`
 // (not saved). Problems come back as {ok: false, message} and are shown with alert unless
 // `quiet` is set. Never throws.
-MK.run = function (id, options, quiet) {
+// how.setControls: the options dialog's OK, whose values also go into controls the selection
+// already has (MK.controls.ensure).
+MK.run = function (id, options, quiet, how) {
   var r;
   try {
     if (typeof id === "string" && id.indexOf("lib:") === 0) r = MK.library.run(id);
-    else r = MK.runTool(id, options);
+    else r = MK.runTool(id, options, how);
   } catch (e) {
     r = { ok: false, message: MK.util.errText(e), created: [] };
   }
@@ -228,7 +230,7 @@ MK.run = function (id, options, quiet) {
   return r;
 };
 
-MK.runTool = function (id, options) {
+MK.runTool = function (id, options, how) {
   var tool = MK.tools[id];
   if (!tool) return { ok: false, message: "\"" + id + "\" isn't a tool in this version of Motion Kit (" + MK.version + ").", created: [] };
   var opts = MK.options.merged(tool, options);
@@ -236,11 +238,13 @@ MK.runTool = function (id, options) {
   if (tool.needsComp && !ctx.comp) return { ok: false, message: tool.name + ": open a composition first.", created: [] };
   var r;
   app.beginUndoGroup(MK.NAME + ": " + tool.name);
+  MK.controls.overwrite = !!(how && how.setControls);
   try {
     r = MK.toResult(tool.run(ctx, opts), ctx);
   } catch (e) {
     r = { ok: false, message: e instanceof MK.UserError ? tool.name + ": " + e.message : tool.name + " failed: " + MK.util.errText(e), created: ctx.created };
   } finally {
+    MK.controls.overwrite = false;
     app.endUndoGroup();
   }
   return r;

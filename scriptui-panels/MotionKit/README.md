@@ -21,7 +21,7 @@ All panels share one layout, so a change made in one shows up in the others. `di
 ## Use
 
 - **Run:** click a button to run its tool on the active comp's selection. Each run is one undo step. Buttons show only their icon; hover for the tool's name and what it does.
-- **Options:** Shift-click (or right-click) a button for its options. Options are remembered, and a plain click uses them.
+- **Options:** Shift-click (or right-click) a button for its options. Options are remembered, and a plain click uses them. A tool that adds controls (like Bounce) reuses the ones a layer already has and keeps their values, so changes you made in Effect Controls stay; pressing OK in the options dialog also writes the chosen values into them.
 - **Remove:** Alt-click Bounce, Elastic or Loop In/Out to take its expressions off the selected properties, or, with no property selected, off the selected layers. Its controls go too once nothing on the layer uses them. Your own expressions and other tools' expressions stay. It's one undo step.
 - **Rearrange:** click the pencil in a panel's header for edit mode. Every cell then gets a dashed outline and a ✕ that removes it, a trailing **+** cell adds tools and widgets the panel doesn't have yet, and dragging a cell reorders it. Click the pencil again when you're done. Out of edit mode, dragging never moves a cell, so a slider drag stays a slider drag. To move buttons between panels, use the ⚙ button's Layout & Style dialog, because ScriptUI can't drag between windows.
 - **Views:** the view list (under the title in `Motion Kit.jsx`) switches the panel between the combined view, the four categories and the menu.
@@ -55,7 +55,7 @@ The Motion Kit panel has every tool except Ease Copy and Move Anchor Point, whic
 
 | Tool | What it does |
 |---|---|
-| Bounce | After the last keyframe, the value bounces like a ball, in the direction of the last change. Controls: Amplitude (how high the first hop goes, as a percentage of the change between the keyframes, so Position, Scale and Rotation bounce alike), Bounciness (how much of its height each hop keeps), Hop Time (the first hop's length; later ones get shorter), Max Jumps and Jump In/Out (also before the first key). Eased keyframes bounce too. |
+| Bounce | After the last keyframe, the value bounces like a ball, in the direction of the last change. Controls: Amplitude (how high the first hop goes, as a percentage of the change between the keyframes, so Position, Scale and Rotation bounce alike), Bounciness (how much of its height each hop keeps), Hop Time (the first hop's length), Hop Shortening (how much shorter each hop is than the one before; 0 keeps them all as long as the first), Max Jumps and Jump In/Out (also before the first key). Eased keyframes bounce too. |
 | Elastic | A decaying spring overshoot after the last keyframe. Controls: Amplitude, Frequency, Decay and Jump In/Out. Like Bounce, it offers to make an eased last keyframe arrive Linear. |
 | Loop In/Out | Adds a cycle, pingpong, offset or continue loop before, after or on both sides of the keyframes. |
 | Ease Keyframes | Sets the ease on the selected keys from a draggable speed-curve editor or presets. |

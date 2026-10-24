@@ -5,15 +5,15 @@
 // Sizes are relative to the keyframes, so one setting gives Position, Scale and Rotation the
 // same bounce. R is the keyframes' range (the farthest key from the first). The first hop rises
 // Amplitude % of R and lasts Hop Time seconds; each later hop keeps Bounciness % of the height
-// before it, and its length shrinks with the square root of its height, as a ball's does under
-// constant gravity. A hop of height h and length d is 4 h tau (d - tau) / d^2 high at tau
-// seconds into it. Hops stop after Max Jumps or once one would be lower than 0.001 R. Jump
+// before it and is Hop Shortening % shorter (a real ball's hops shorten with the square root of
+// their height, about 29 % at Bounciness 50 %; the default 15 % keeps later hops longer). A hop
+// of height h and length d is 4 h tau (d - tau) / d^2 high at tau seconds into it. Hops stop after Max Jumps or once one would be lower than 0.001 R. Jump
 // In/Out mirrors this before the first key, against the first change.
 
 (function () {
   var NAME = "Bounce", C = MK.controls;
   var CTRL = {
-    amp: C.name(NAME, "Amplitude"), keep: C.name(NAME, "Bounciness"), time: C.name(NAME, "Hop Time"),
+    amp: C.name(NAME, "Amplitude"), keep: C.name(NAME, "Bounciness"), time: C.name(NAME, "Hop Time"), shrink: C.name(NAME, "Hop Shortening"),
     jumps: C.name(NAME, "Max Jumps"), io: C.name(NAME, "Jump In/Out")
   };
   // Controls of earlier versions, whose Amplitude meant the share of speed each hop kept.
@@ -23,6 +23,7 @@
     "var mkH = Math.max(0, " + C.ref(CTRL.amp) + ".value) / 100;",
     "var mkK = Math.max(0, Math.min(95, " + C.ref(CTRL.keep) + ".value)) / 100;",
     "var mkT = Math.max(0.01, " + C.ref(CTRL.time) + ".value);",
+    "var mkQ = 1 - Math.max(0, Math.min(90, " + C.ref(CTRL.shrink) + ".value)) / 100;",
     "var mkJ = Math.round(Math.max(1, Math.min(20, " + C.ref(CTRL.jumps) + ".value)));",
     "var mkIO = " + C.ref(CTRL.io, "ADBE Checkbox Control") + ".value != 0;",
     "function mkLen(v) {",
@@ -39,7 +40,7 @@
     "    if (tau < d) return 4 * h * tau * (d - tau) / (d * d);",
     "    tau -= d;",
     "    h *= mkK;",
-    "    d *= Math.sqrt(mkK);",
+    "    d *= mkQ;",
     "  }",
     "  return 0;",
     "}",
@@ -58,12 +59,14 @@
     "mkOut"
   ].join("\n");
 
-  // A layer with an earlier version's controls gets a fresh control set, and its other Bounce
-  // expressions this version's body, so an old Amplitude isn't read with the new meaning.
+  // Brings a layer's other Bounce expressions up to this version's body, so all of them read
+  // the same controls. A layer with an earlier version's controls first loses them, so an old
+  // Amplitude (a share of speed then) isn't read with the new meaning.
   function upgrade(layer) {
-    if (!C.find(layer, OLD[0]) && !C.find(layer, OLD[1])) return;
-    var fx = C.fx(layer), prefix = C.name(NAME, "");
-    for (var j = fx.numProperties; j >= 1; j--) if (fx.property(j).name.indexOf(prefix) === 0) fx.property(j).remove();
+    if (C.find(layer, OLD[0]) || C.find(layer, OLD[1])) {
+      var fx = C.fx(layer), prefix = C.name(NAME, "");
+      for (var j = fx.numProperties; j >= 1; j--) if (fx.property(j).name.indexOf(prefix) === 0) fx.property(j).remove();
+    }
     var ps = MK.expr.ofTool(layer, "bounce");
     for (var i = 0; i < ps.length; i++) MK.expr.set(ps[i], "bounce", BODY);
   }
@@ -85,7 +88,8 @@
     options: [
       { key: "hopHeight", label: "Amplitude", type: "number", "default": 20, min: 0, max: 200, unit: "% of the keyframes' change", help: "How high the first hop goes: 20 % of a change from 100 to 117 % rises 3.4 % past 117" },
       { key: "bounciness", label: "Bounciness", type: "number", "default": 50, min: 0, max: 95, unit: "%", help: "How much of its height each hop keeps: lower settles sooner" },
-      { key: "hopTime", label: "Hop Time", type: "number", "default": 0.4, min: 0.02, max: 5, unit: "s", help: "Length of the first hop; later hops get shorter with their height" },
+      { key: "hopTime", label: "Hop Time", type: "number", "default": 0.4, min: 0.02, max: 5, unit: "s", help: "Length of the first hop" },
+      { key: "hopShortening", label: "Hop Shortening", type: "number", "default": 15, min: 0, max: 90, unit: "%", help: "How much shorter each hop is than the one before: 0 keeps every hop as long as the first; about 30 matches a real ball at Bounciness 50 %" },
       { key: "maxJumps", label: "Max Jumps", type: "number", "default": 9, min: 1, max: 20, integer: true },
       { key: "jumpInOut", label: "Jump In/Out: also bounce before the first keyframe", type: "checkbox", "default": false }
     ],
@@ -99,6 +103,7 @@
         C.slider(layer, CTRL.amp, o.hopHeight);
         C.slider(layer, CTRL.keep, o.bounciness);
         C.slider(layer, CTRL.time, o.hopTime);
+        C.slider(layer, CTRL.shrink, o.hopShortening);
         C.slider(layer, CTRL.jumps, o.maxJumps);
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "bounce", BODY);

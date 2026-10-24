@@ -83,10 +83,16 @@ MK.controls = (function () {
     return null;
   };
   // The control called `name`; created with `value` when the layer has none, so one control set
-  // drives every property a tool touched on that layer. Returns the effect.
+  // drives every property a tool touched on that layer. An existing control keeps its value,
+  // except during a run from the options dialog's OK (overwrite, set by MK.runTool), whose
+  // values the user just chose. Returns the effect.
+  C.overwrite = false;
   C.ensure = function (layer, matchName, name, value) {
     var e = C.find(layer, name, matchName);
-    if (e) return e;
+    if (e) {
+      if (C.overwrite && value !== undefined && value !== null) C.set(e, value);
+      return e;
+    }
     var fx = C.fx(layer);
     if (!fx) MK.fail(layer.name + " can't take effects, so it can't hold Motion Kit controls.");
     e = fx.addProperty(matchName);

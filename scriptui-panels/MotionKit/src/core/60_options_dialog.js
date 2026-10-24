@@ -180,7 +180,7 @@ MK.optionsDialog = (function () {
     if (!MK.options.has(tool)) return MK.run(id);
     var ctl = build(tool, MK.options.get(tool));
     ctl.win.show();
-    return ctl.action === "run" ? MK.run(id) : null;
+    return ctl.action === "run" ? MK.run(id, null, false, { setControls: true }) : null;
   }
 
   return { build: build, open: open };

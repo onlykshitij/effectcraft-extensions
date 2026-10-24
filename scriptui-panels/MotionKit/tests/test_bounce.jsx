@@ -22,35 +22,35 @@ T.check(!bad.ok && /at least two keyframes/.test(bad.message) && /two keyframes/
 T.check(fx.numProperties === 0 && op.expression === "", "a refused run changes nothing");
 
 T.select(comp, [ball], [pos, rot]);
-var r = MotionKit.run("bounce", { hopHeight: 25, bounciness: 50, hopTime: 0.4 });
+var r = MotionKit.run("bounce", { hopHeight: 25, bounciness: 50, hopTime: 0.4, hopShortening: 20 });
 T.check(r.ok && /2 properties/.test(r.message), "bounce added: " + r.message);
 T.check(pos.expression.split("\n")[0] === "// Motion Kit: bounce", "expression starts with the Motion Kit mark");
 function ctrl(name) { var e = fx.property(name); return e ? e.property(1).value : undefined; }
-T.check(fx.numProperties === 5, "one control set for both properties (" + fx.numProperties + " effects)");
-T.check(ctrl("Bounce – Amplitude") === 25 && ctrl("Bounce – Bounciness") === 50 && T.near(ctrl("Bounce – Hop Time"), 0.4) && ctrl("Bounce – Max Jumps") === 9 && !ctrl("Bounce – Jump In/Out"),
-  "controls take the run's options (amplitude 25 %, bounciness 50 %, hop time 0.4 s, 9 jumps, in/out off)");
+T.check(fx.numProperties === 6, "one control set for both properties (" + fx.numProperties + " effects)");
+T.check(ctrl("Bounce – Amplitude") === 25 && ctrl("Bounce – Bounciness") === 50 && T.near(ctrl("Bounce – Hop Time"), 0.4) && ctrl("Bounce – Hop Shortening") === 20 && ctrl("Bounce – Max Jumps") === 9 && !ctrl("Bounce – Jump In/Out"),
+  "controls take the run's options (amplitude 25 %, bounciness 50 %, hop time 0.4 s, shortening 20 %, 9 jumps, in/out off)");
 T.check(pos.expressionError === "" && rot.expressionError === "", "expressions compile");
 
 // Between keys: unchanged.
 T.check(T.near(pos.valueAtTime(1.5, false), pos.valueAtTime(1.5, true)), "between keys the value is unchanged");
 
 // Expected hops, as a share of the range: the first rises H and lasts T; each keeps K of the
-// height before it and sqrt(K) of the length.
-function hop(tau, H, K, T0, maxJ) {
+// height before it and Q of the length.
+function hop(tau, H, K, T0, Q, maxJ) {
   var h = H, d = T0;
   for (var k = 0; k < maxJ; k++) {
     if (h < 0.001) return 0;
     if (tau < d) return 4 * h * tau * (d - tau) / (d * d);
     tau -= d;
     h *= K;
-    d *= Math.sqrt(K);
+    d *= Q;
   }
   return 0;
 }
 var worst = 0, behind = 0, peaks = [], prev = 0, rising = false;
 for (var t = 2; t <= 4; t += 0.004) {
   var x = pos.valueAtTime(t, false)[0] - 500;
-  worst = Math.max(worst, Math.abs(x - 400 * hop(t - 2, 0.25, 0.5, 0.4, 9)));
+  worst = Math.max(worst, Math.abs(x - 400 * hop(t - 2, 0.25, 0.5, 0.4, 0.8, 9)));
   if (x < -1e-6) behind++;
   if (x < prev && rising) peaks.push(prev);
   rising = x > prev;
@@ -69,14 +69,23 @@ T.check(T.near(rot.valueAtTime(2.2, false), 112.5, 1e-3), "1D property: rotation
 
 // The controls drive it.
 fx.property("Bounce – Max Jumps").property(1).setValue(1);
-T.check(T.near(pos.valueAtTime(2.2, false)[0], 600, 0.01) && T.near(pos.valueAtTime(2.4 + 0.2 * Math.SQRT1_2, false)[0], 500), "Max Jumps 1 keeps only the first hop");
+T.check(T.near(pos.valueAtTime(2.2, false)[0], 600, 0.01) && T.near(pos.valueAtTime(2.56, false)[0], 500), "Max Jumps 1 keeps only the first hop");
+fx.property("Bounce – Hop Time").property(1).setValue(0.8);
+T.check(T.near(pos.valueAtTime(2.4, false)[0], 600, 0.01), "Hop Time 0.8 s: the first hop peaks at t = 2.4");
+fx.property("Bounce – Hop Time").property(1).setValue(0.4);
 fx.property("Bounce – Jump In/Out").property(1).setValue(1);
 T.check(T.near(pos.valueAtTime(0.8, false)[0], 0, 0.01), "Jump In/Out mirrors the hop before the first key, against the first change");
 T.check(T.near(pos.valueAtTime(0.5, false)[0], 100), "before the hops the value is the first key's");
 
 // Running again reuses the controls and keeps their values.
 var again = MotionKit.run("bounce", { hopHeight: 99 });
-T.check(again.ok && fx.numProperties === 5 && ctrl("Bounce – Amplitude") === 25, "a second run reuses the controls (values kept)");
+T.check(again.ok && fx.numProperties === 6 && ctrl("Bounce – Amplitude") === 25, "a second run reuses the controls (values kept)");
+// The options dialog's OK (setControls) writes the chosen options into the layer's controls.
+T.check(MotionKit.run("bounce", { hopHeight: 30, hopTime: 0.5 }, false, { setControls: true }).ok && ctrl("Bounce – Amplitude") === 30 && T.near(ctrl("Bounce – Hop Time"), 0.5),
+  "a run from the options dialog's OK updates the controls the layer has");
+T.check(MotionKit.run("bounce").ok && ctrl("Bounce – Amplitude") === 30, "and the next plain run keeps them");
+fx.property("Bounce – Amplitude").property(1).setValue(25);
+fx.property("Bounce – Hop Time").property(1).setValue(0.4);
 
 // A second layer gets its own controls. Scale changes 50 % where position moves hundreds of
 // pixels, and the default Amplitude (20 %) still bounces it by a fifth of that change.
@@ -84,7 +93,7 @@ var ball2 = T.solid(comp, "Ball 2", 50, 50), sc2 = ball2.transform.scale;
 sc2.setValueAtTime(0, [100, 100]);
 sc2.setValueAtTime(1, [150, 150]);
 T.select(comp, [ball2], [sc2]);
-T.check(MotionKit.run("bounce").ok && ball2.property("ADBE Effect Parade").numProperties === 5, "each layer gets its own control set");
+T.check(MotionKit.run("bounce").ok && ball2.property("ADBE Effect Parade").numProperties === 6, "each layer gets its own control set");
 T.check(T.near(sc2.valueAtTime(1.2, false)[0], 160, 0.01), "scale's first hop rises 20 % of its 50 % change: 160 at t = 1.2");
 
 // An eased last key bounces just the same, and Bounce asks nothing: the hops come from the
@@ -108,7 +117,7 @@ old.transform.rotation.expression = "// Motion Kit: bounce\nvalue";
 old.transform.position.setValueAtTime(0, [0, 0]);
 old.transform.position.setValueAtTime(1, [100, 0]);
 T.select(comp, [old], [old.transform.position]);
-T.check(MotionKit.run("bounce").ok && !ofx.property("Bounce – Hop Gravity") && ofx.property("Bounce – Amplitude").property(1).value === 20 && ofx.numProperties === 5 &&
+T.check(MotionKit.run("bounce").ok && !ofx.property("Bounce – Hop Gravity") && ofx.property("Bounce – Amplitude").property(1).value === 20 && ofx.numProperties === 6 &&
   old.transform.rotation.expression.indexOf("Bounciness") > 0 && T.near(old.transform.rotation.valueAtTime(1.2, false), 108, 1e-3),
   "an earlier version's controls are replaced and its other Bounce expressions upgraded");
 
@@ -128,7 +137,7 @@ T.check(op.expression.indexOf("// Motion Kit: bounce") === 0, "and replaced when
 // and deletes the controls, leaving other expressions. One undo step.
 T.select(comp, [ball], [pos]);
 var off = MotionKit.remove("bounce");
-T.check(off.ok && pos.expression === "" && rot.expression.indexOf("// Motion Kit: bounce") === 0 && fx.numProperties === 5 && /removed from 1 property\.$/.test(off.message),
+T.check(off.ok && pos.expression === "" && rot.expression.indexOf("// Motion Kit: bounce") === 0 && fx.numProperties === 6 && /removed from 1 property\.$/.test(off.message),
   "Alt-click takes Bounce off the selected property; the controls stay for the others: " + off.message);
 ball.transform.anchorPoint.expression = "value";
 T.select(comp, [ball], []);
@@ -136,7 +145,7 @@ var rest = MotionKit.remove("bounce");
 T.check(rest.ok && rot.expression === "" && op.expression === "" && fx.numProperties === 0 && ball.transform.anchorPoint.expression === "value" && /removed from 2 properties, with its controls/.test(rest.message),
   "with only the layer selected it takes off the rest and deletes the controls, leaving other expressions: " + rest.message);
 app.executeCommand(app.findMenuCommandId("Undo"));
-T.check(rot.expression.indexOf("// Motion Kit: bounce") === 0 && op.expression.indexOf("// Motion Kit: bounce") === 0 && fx.numProperties === 5, "one Undo brings both back");
+T.check(rot.expression.indexOf("// Motion Kit: bounce") === 0 && op.expression.indexOf("// Motion Kit: bounce") === 0 && fx.numProperties === 6, "one Undo brings both back");
 ball.transform.anchorPoint.expression = "";
 T.select(comp, [ball2], [ball2.transform.position]);
 var none = MotionKit.remove("bounce");
@@ -150,7 +159,7 @@ p3.setValueAtTime(0, [0, 0]);
 p3.setValueAtTime(1, [100, 0]);
 T.select(comp, [ball3], [p3]);
 MotionKit.run("bounce");
-T.check(ball3.property("ADBE Effect Parade").numProperties === 5 && p3.expression !== "", "bounce on a third layer");
+T.check(ball3.property("ADBE Effect Parade").numProperties === 6 && p3.expression !== "", "bounce on a third layer");
 app.executeCommand(app.findMenuCommandId("Undo"));
 T.check(ball3.property("ADBE Effect Parade").numProperties === 0 && p3.expression === "", "one Undo removes the controls and the expression");
 
