@@ -37,9 +37,9 @@ op.setValueAtTime(1, 100);
 op.setValueAtTime(2, 0);
 T.select(comp, [], []);
 keySel(op, [1, 2, 3]);
-var e = W("ease"), tr = e.sliders.easeIn.track, tw = tr.mkW;
-// x in the track for a value (8 px inset at both ends).
-function xFor(v, lo, hi) { return 8 + (tw - 16) * (v - lo) / (hi - lo); }
+var e = W("ease"), sl = e.sliders.easeIn, tr = sl.track;
+// x in the slider's part for a value: the track starts at x0 after the icon, 8 px inset at both ends.
+function xFor(v, lo, hi, s) { var t = s || sl; return t.x0 + 8 + (t.w - 16) * (v - lo) / (hi - lo); }
 T.mouse(win, tr, "mousedown", xFor(20, 0.1, 100), 10);
 T.mouse(win, tr, "mousemove", xFor(60, 0.1, 100), 10);
 T.check(/^60 %$/.test(texts(tr)), "dragging shows the value as text (" + texts(tr) + ")");
@@ -53,15 +53,15 @@ T.check(o.easeIn === 60 && T.near(ie.influence, 60) && T.near(oe.influence, 33) 
   "releasing applies Ease In 60 %, Ease Out 33 % and speed 0 to the selected keys (in " + ie.influence + ", out " + oe.influence + ")");
 T.check(T.near(op.keyOutTemporalEase(1)[0].influence, 33) && T.near(op.keyInTemporalEase(3)[0].influence, 60), "every selected key: the first gets its out ease, the last its in ease");
 e = W("ease");
-var st = e.sliders.speed.track;
-T.mouse(win, st, "mousedown", 8 + (st.mkW - 16) / 2, 10);
-T.mouse(win, st, "mouseup", 8 + (st.mkW - 16) / 2, 10);
+var ss = e.sliders.speed, st = ss.track;
+T.mouse(win, st, "mousedown", xFor(100, 0, 200, ss), 10);
+T.mouse(win, st, "mouseup", xFor(100, 0, 200, ss), 10);
 T.check(MotionKit.options.get("ease").speed === 100 && T.near(op.keyInTemporalEase(2)[0].speed, 100) && T.near(op.keyOutTemporalEase(2)[0].speed, -100),
   "Speed 100 % is the segments' average speed at the key (in 100, out -100 per second)");
 app.executeCommand(app.findMenuCommandId("Undo"));
 T.check(T.near(op.keyInTemporalEase(2)[0].speed, 0) && T.near(op.keyInTemporalEase(2)[0].influence, 60), "one Undo takes back one release");
 e = W("ease");
-click(e.sliders.easeIn.icon);
+click(e.sliders.easeIn.part);
 T.check(MotionKit.options.get("ease").easeIn === 33 && W("ease").sliders.easeIn.value() === 33, "clicking the slider's icon resets it to 33 %");
 e = W("ease");
 click(e.sliders.easeOut.track, { shiftKey: true });
@@ -71,8 +71,8 @@ opened = [];
 T.select(comp, [A], []);
 T.alerts = [];
 e = W("ease");
-T.mouse(win, e.sliders.easeOut.track, "mousedown", 20, 10);
-T.mouse(win, e.sliders.easeOut.track, "mouseup", 20, 10);
+T.mouse(win, e.sliders.easeOut.track, "mousedown", e.sliders.easeOut.x0 + 20, 10);
+T.mouse(win, e.sliders.easeOut.track, "mouseup", e.sliders.easeOut.x0 + 20, 10);
 T.check(/^Ease: select keyframes/.test(T.lastAlert()), "no keyframes selected: the release explains (" + T.lastAlert() + ")");
 
 // ---- Key Copy/Paste
@@ -156,9 +156,12 @@ click(an.squares.tl);
 T.check(T.near(D.transform.anchorPoint.value, [0, 0]) && T.near(corners()[0], before[0]) && T.near(corners()[1], before[1]), "a square moves the anchor to that point without moving the layer");
 T.check(MotionKit.options.get("anchor").point === "tl", "the square used last is remembered");
 __uiSnapshot();
-var hi = W("anchor").squares.tl.__draw, lit = false;
-for (var h = 0; h < hi.length; h++) if (hi[h].op === "stroke" && hi[h].width === 2) lit = true;
-T.check(lit, "and highlighted");
+var aw = W("anchor"), hi = aw.cell.__draw, tl = aw.squares.tl, lit = false;
+for (var h = 0; h < hi.length; h++) {
+  var seg = hi[h].path && hi[h].path[0];
+  if (hi[h].op === "stroke" && hi[h].width === 2 && seg && seg.k === "R" && seg.x === tl.bounds[0] + 1 && seg.y === tl.bounds[1] + 1) lit = true;
+}
+T.check(lit, "and highlighted (an outline on its square)");
 click(W("anchor").squares.br, { shiftKey: true });
 T.check(opened.pop() === "moveAnchor" && T.near(D.transform.anchorPoint.value, [0, 0]), "Shift-click opens Move Anchor Point's options and moves nothing");
 

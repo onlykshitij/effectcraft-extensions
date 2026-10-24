@@ -72,7 +72,7 @@
           w.buttons[o[0]] = w.part(o[0], [x, by, bw, btnH], {
             tip: o[1] + ": item k moves Amount x floor(k / Step) frames. Shift-click: all sequencer options",
             click: function () { w.run({ order: o[0] }); },
-            draw: function (g, p) { MK.ui.gfx.button(g, bw, btnH, r, o[2], w.style.fg, w.style.accent, w.hover(p)); }
+            draw: function (g) { MK.ui.gfx.button(g, bw, btnH, r, o[2], w.style.fg, w.style.accent); }
           });
         })(ORDERS[i], pad + i * (bw + gap));
       }

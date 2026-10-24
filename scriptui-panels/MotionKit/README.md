@@ -1,28 +1,28 @@
 # Motion Kit
 
-24 motion design tools and 5 inline widgets for EffectCraft. The Motion Kit panel holds all of them; four smaller panels hold one category each, and a compact menu panel lists every tool. You can rearrange and restyle every panel.
+24 motion design tools and 5 inline widgets for EffectCraft, in one dockable panel. Its view list switches between the combined view (every widget and tool), one category at a time, and a compact menu. You can rearrange and restyle every view.
 
 <img src="preview.png" alt="The combined Motion Kit panel: ease sliders, key copy and paste, interpolation buttons, anchor grid, sequencer and icon-only tool buttons on a dark blue-green background" width="290"> <img src="preview-edit.png" alt="The same panel in edit mode, with dashed outlines and a remove button on every cell" width="280"> <img src="preview-rig.png" alt="Motion Kit 2, the Rig panel, sized to its six buttons" width="290">
 
 ## Install
 
-In EffectCraft, use File ▸ Scripts ▸ Install ScriptUI Panel… for each of these files in `dist/`:
+In EffectCraft, use File ▸ Scripts ▸ Install ScriptUI Panel… for `dist/Motion Kit.jsx`, then open it from the bottom of the Window menu. That one entry is all you need. The view list in its header picks what it shows, and it remembers the choice:
 
-- `Motion Kit.jsx` (everything: the widgets, then every tool)
-- `Motion Kit 1.jsx` (Animate)
-- `Motion Kit 2.jsx` (Rig)
-- `Motion Kit 3.jsx` (Shapes)
-- `Motion Kit 4.jsx` (Comp)
-- `Motion Kit Menu.jsx` (every tool from two dropdowns)
+- **Combined:** the widgets, then every tool;
+- **Animate**, **Rig**, **Shapes**, **Comp:** one category each (named after the layout's panels 1–4);
+- **Menu:** every tool from two dropdowns.
 
-Open them from the bottom of the Window menu. Install only the ones you want. They share one layout, so a change made in one panel shows up in the others. `dist/motionkit-lib.jsx` has no UI; the tests use it.
+To dock several views at once, also install the optional single panels in `dist/extra/`: `Motion Kit 1.jsx` to `Motion Kit 4.jsx` and `Motion Kit Menu.jsx`. Each adds its own Window menu entry. Once EffectCraft supports submenus in the Window menu, put them in a "Motion Kit" subfolder of the ScriptUI Panels folder; until then, install them at the top level like `Motion Kit.jsx`.
+
+All panels share one layout, so a change made in one shows up in the others. `dist/motionkit-lib.jsx` has no UI; the tests use it.
 
 ## Use
 
 - **Run:** click a button to run its tool on the active comp's selection. Each run is one undo step. Buttons show only their icon; hover for the tool's name and what it does.
 - **Options:** Shift-click (or right-click) a button for its options. Options are remembered, and a plain click uses them.
 - **Rearrange:** click the pencil in a panel's header for edit mode. Every cell then gets a dashed outline and a ✕ that removes it, a trailing **+** cell adds tools and widgets the panel doesn't have yet, and dragging a cell reorders it. Click the pencil again when you're done. Out of edit mode, dragging never moves a cell, so a slider drag stays a slider drag. To move buttons between panels, use the ⚙ button's Layout & Style dialog, because ScriptUI can't drag between windows.
-- **Layouts:** the list next to the panel title switches every panel to another named layout.
+- **Views:** the view list (under the title in `Motion Kit.jsx`) switches the panel between the combined view, the four categories and the menu.
+- **Layouts:** the layout list in the header switches every panel to another named layout.
 - **Command box:** type part of a tool's name in panel 1's command box and press Enter.
 
 Controls a tool adds are Expression Controls named "Tool – Setting" (for example "Bounce – Amplitude"), so you can change them later in Effect Controls.
@@ -118,6 +118,7 @@ Layouts saved by Motion Kit 0.1 had four panels. They load with the Motion Kit p
 - **Help tips need custom-drawn buttons.** EffectCraft shows a help tip for a custom-drawn control but not for a custom-drawn group, so every button and every widget control is a drawn `iconbutton`.
 - **Bold is drawn twice.** EffectCraft draws every script font as regular, so the panel title is drawn twice, 0.6 px apart.
 - **No join style.** ScriptUI pens have no round joins, so icons draw a dot on every corner.
+- **Every event redraws the panel.** EffectCraft re-runs a script panel's drawing, lays it out and serialises it after every event the script receives. So Motion Kit listens to pointer movement only during a drag, has no hover highlight (help tips show what's under the pointer), and checks for changes made in other panels every 3 seconds and on every click.
 - **Colours are pre-corrected.** EffectCraft 0.16 and earlier draw script colours too bright ([storytold/effectcraft#2272](https://github.com/storytold/effectcraft/pull/2272)), so Motion Kit corrects them when it runs in EffectCraft.
 - **Deep duplicate needs EffectCraft 0.16 or later.** Duplicate Comp's Deep option needs `replaceSource`. On older versions it makes a plain duplicate and says so.
 - **Some tools overwrite the clipboard.** Unprecomp and Merge Shapes copy through EffectCraft's clipboard.
@@ -128,7 +129,7 @@ Layouts saved by Motion Kit 0.1 had four panels. They load with the Motion Kit p
 ```sh
 python3 build.py              # src/ -> dist/
 python3 build.py --check      # fails when dist/ is out of date
-tests/run_all.sh              # 30 headless test files in effectcraft-cli
+tests/run_all.sh              # 31 headless test files in effectcraft-cli, and the build checks
 ```
 
 The tests run every tool through its API, check the results numerically, and render frames inside EffectCraft to confirm that tools which shouldn't move anything don't. The panel and widget tests click, drag and Shift-click through EffectCraft's own ScriptUI mouse routing. [CONTRIBUTING-TOOLS.md](CONTRIBUTING-TOOLS.md) explains how to add a tool.

@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Runs the Motion Kit tests headless in effectcraft-cli and prints a pass/fail summary.
 #
-#   tests/run_all.sh                  every tests/test_*.jsx against dist/
+#   tests/run_all.sh                  every tests/test_*.jsx against dist/, and tests/test_*.py
+#                                     (build.py checks, in Python)
 #   tests/run_all.sh test_loop.jsx    only the named tests
 #   MK_DIST=/tmp/me/dist tests/run_all.sh     test another build (python3 build.py --out DIR)
 #   EFFECTCRAFT_CLI=/path/to/effectcraft-cli  the CLI to use (default: effectcraft-cli on PATH)
@@ -30,10 +31,11 @@ fi
 stage=$(mktemp -d "${TMPDIR:-/tmp}/motionkit-tests.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
 cp "$here"/*.jsx "$stage"/
-mkdir "$stage/dist"
+mkdir -p "$stage/dist/extra"
 cp "$dist"/*.jsx "$stage/dist/"
+cp "$dist"/extra/*.jsx "$stage/dist/extra/" 2>/dev/null || { echo "run_all.sh: $dist/extra/ has no panels (run python3 build.py)" >&2; exit 2; }
 
-if [ $# -gt 0 ]; then tests=("$@"); else tests=(); for f in "$here"/test_*.jsx; do tests+=("$(basename "$f")"); done; fi
+if [ $# -gt 0 ]; then tests=("$@"); else tests=(); for f in "$here"/test_*.jsx "$here"/test_*.py; do tests+=("$(basename "$f")"); done; fi
 
 pass=0
 fail=0
@@ -41,7 +43,8 @@ failed=()
 for t in "${tests[@]}"; do
   name=$(basename "$t")
   log="$stage/$name.log"
-  if "$cli" script "$stage/$name" --empty >"$log" 2>&1 && grep -q "^all checks passed" "$log"; then
+  if [ "${name##*.}" = py ]; then run=(python3 -I "$here/$name"); else run=("$cli" script "$stage/$name" --empty); fi
+  if "${run[@]}" >"$log" 2>&1 && grep -q "^all checks passed" "$log"; then
     pass=$((pass + 1))
     echo "PASS  $name ($(grep -c '^ok ' "$log") checks)"
   else

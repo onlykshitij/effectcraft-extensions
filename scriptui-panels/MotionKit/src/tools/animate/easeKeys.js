@@ -111,18 +111,23 @@
       ctl.set(fromHandles(h));
     };
     graph.onDraw = function () { draw(this.graphics, ctl); };
-    // Same pattern as the panel grid: press picks a handle, moves drag it, a release outside ends it.
+    // Same pattern as the panel grid: press picks a handle, moves drag it, a release outside ends
+    // it. mousemove is only listened to during a drag: EffectCraft redraws after every event.
+    function moved(e) { if (ctl.drag && e.target === graph) ctl.dragTo(ctl.drag, e.clientX, e.clientY); }
+    function stop() {
+      ctl.drag = null;
+      graph.removeEventListener("mousemove", moved);
+    }
     graph.addEventListener("mousedown", function (e) {
-      if (e.target === graph) ctl.drag = ctl.pick(e.clientX, e.clientY);
-    });
-    graph.addEventListener("mousemove", function (e) {
-      if (ctl.drag && e.target === graph) ctl.dragTo(ctl.drag, e.clientX, e.clientY);
+      if (e.target !== graph) return;
+      ctl.drag = ctl.pick(e.clientX, e.clientY);
+      if (ctl.drag) graph.addEventListener("mousemove", moved);
     });
     graph.addEventListener("mouseup", function (e) {
       if (ctl.drag && e.target === graph) ctl.dragTo(ctl.drag, e.clientX, e.clientY);
-      ctl.drag = null;
+      stop();
     });
-    win.addEventListener("mouseup", function (e) { if (e.target !== graph) ctl.drag = null; });
+    win.addEventListener("mouseup", function (e) { if (e.target !== graph) stop(); });
 
     var side = top.add("group");
     side.orientation = "column";

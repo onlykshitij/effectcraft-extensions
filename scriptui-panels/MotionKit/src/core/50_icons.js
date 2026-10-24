@@ -4,8 +4,11 @@
 //
 // An icon is an array of layers. A layer is a path string (stroked in the foreground colour) or
 // {d, stroke, fill, w, alpha}: stroke / fill are "fg", "accent" or a hex colour, w is the pen
-// width in design units (default 2). Strokes get round joins and caps: ScriptUIGraphics has no
-// join style, so a dot is drawn on every corner and open end. Path commands, absolute design units:
+// width in design units (default 2). Strokes get round joins: ScriptUIGraphics has no join
+// style, so a dot is drawn on every corner. Each icon is flattened once per
+// size and colours (circles stay ellipses); a redraw only replays the points, because every
+// point goes into the window snapshot EffectCraft takes after each event. Path commands,
+// absolute design units:
 //   M x y, L x y, H x, V y, Q x1 y1 x y, C x1 y1 x2 y2 x y, Z
 //   A cx cy r a0 a1          arc, degrees, 0 = +x, clockwise on screen (joins the current point)
 //   O cx cy r                circle            E cx cy rx ry      ellipse
@@ -16,7 +19,7 @@
 
 MK.icons = (function () {
   var U = MK.util;
-  var CURVE_STEPS = 10, PEN = 2, BEND_COS = Math.cos(30 * Math.PI / 180);
+  var CURVE_STEPS = 5, ARC_STEP = 30, PEN = 2, BEND_COS = Math.cos(55 * Math.PI / 180);
   var cache = {};
 
   var G = {};
@@ -36,20 +39,21 @@ MK.icons = (function () {
     }
     return out;
   };
-  // Points along an arc from a0 to a1 degrees (both included).
-  G.arc = function (cx, cy, rx, ry, a0, a1) {
-    var out = [], n = Math.max(4, Math.ceil(Math.abs(a1 - a0) / 15));
+  // Points along an arc from a0 to a1 degrees (both included), a point every `step` degrees
+  // at most (default 30).
+  G.arc = function (cx, cy, rx, ry, a0, a1, step) {
+    var out = [], n = Math.max(2, Math.ceil(Math.abs(a1 - a0) / (step || ARC_STEP)));
     for (var i = 0; i <= n; i++) {
       var a = (a0 + (a1 - a0) * i / n) * Math.PI / 180;
       out.push([cx + rx * Math.cos(a), cy + ry * Math.sin(a)]);
     }
     return out;
   };
-  G.roundRect = function (x, y, w, h, r) {
+  G.roundRect = function (x, y, w, h, r, step) {
     var k = Math.max(0, Math.min(r, w / 2, h / 2));
     if (!k) return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
-    return [].concat(G.arc(x + w - k, y + k, k, k, -90, 0), G.arc(x + w - k, y + h - k, k, k, 0, 90),
-      G.arc(x + k, y + h - k, k, k, 90, 180), G.arc(x + k, y + k, k, k, 180, 270));
+    return [].concat(G.arc(x + w - k, y + k, k, k, -90, 0, step), G.arc(x + w - k, y + h - k, k, k, 0, 90, step),
+      G.arc(x + k, y + h - k, k, k, 90, 180, step), G.arc(x + k, y + k, k, k, 180, 270, step));
   };
   G.star = function (cx, cy, r1, r2, n, rot) {
     var out = [], m = Math.max(2, Math.round(n));
@@ -70,7 +74,8 @@ MK.icons = (function () {
 
   var ARGS = { M: 2, L: 2, H: 1, V: 1, Q: 4, C: 6, Z: 0, A: 5, O: 3, E: 4, R: 4, U: 5, P: 5, S: 6 };
 
-  // Path string -> [{pts: [[x, y]...], closed}] in design units.
+  // Path string -> [{pts: [[x, y]...], closed} | {e: [x, y, w, h]}] in design units (e: an
+  // ellipse in its bounding box).
   function compile(d) {
     if (U.has(cache, d)) return cache[d];
     var tok = String(d).match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:[eE]-?\d+)?/g) || [];
@@ -78,6 +83,7 @@ MK.icons = (function () {
     function start(p) { cur = { pts: [p], closed: false }; subs.push(cur); pos = p; }
     function to(p) { if (!cur) start(pos); cur.pts.push(p); pos = p; }
     function shape(pts) { subs.push({ pts: pts, closed: true }); cur = null; }
+    function ellipse(cx, cy, rx, ry) { subs.push({ e: [cx - rx, cy - ry, 2 * rx, 2 * ry] }); cur = null; }
     while (i < tok.length) {
       var c = tok[i++];
       if (!U.has(ARGS, c)) continue;
@@ -94,8 +100,8 @@ MK.icons = (function () {
         if (cur) to(ar[0]); else start(ar[0]);
         for (var n = 1; n < ar.length; n++) to(ar[n]);
       } else if (c === "Z") { if (cur) { cur.closed = true; pos = cur.pts[0]; cur = null; } }
-      else if (c === "O") shape(G.arc(a[0], a[1], a[2], a[2], 0, 360).slice(0, -1));
-      else if (c === "E") shape(G.arc(a[0], a[1], a[2], a[3], 0, 360).slice(0, -1));
+      else if (c === "O") ellipse(a[0], a[1], a[2], a[2]);
+      else if (c === "E") ellipse(a[0], a[1], a[2], a[3]);
       else if (c === "R") shape([[a[0], a[1]], [a[0] + a[2], a[1]], [a[0] + a[2], a[1] + a[3]], [a[0], a[1] + a[3]]]);
       else if (c === "U") shape(G.roundRect(a[0], a[1], a[2], a[3], a[4]));
       else if (c === "P") shape(G.polygon(a[0], a[1], a[2], a[3], a[4]));
@@ -113,44 +119,45 @@ MK.icons = (function () {
 
   function withAlpha(c, a) { return a === undefined ? c : [c[0], c[1], c[2], c[3] * a]; }
 
-  function tracePath(g, subs, x, y, k) {
-    g.newPath();
-    for (var i = 0; i < subs.length; i++) {
-      var pts = subs[i].pts;
-      g.moveTo(x + pts[0][0] * k, y + pts[0][1] * k);
-      for (var j = 1; j < pts.length; j++) g.lineTo(x + pts[j][0] * k, y + pts[j][1] * k);
-      if (subs[i].closed) g.closePath();
-    }
+  function r1(v) { return Math.round(v * 10) / 10; }
+
+  // Subpaths in px (k px per design unit), rounded to 0.1 px: {e: [x, y, w, h]} or
+  // {pts: [x0, y0, x1, y1...], closed}.
+  function toPx(subs, k) {
+    return U.map(subs, function (s) {
+      if (s.e) return { e: [r1(s.e[0] * k), r1(s.e[1] * k), r1(s.e[2] * k), r1(s.e[3] * k)] };
+      var flat = [];
+      for (var j = 0; j < s.pts.length; j++) flat.push(r1(s.pts[j][0] * k), r1(s.pts[j][1] * k));
+      return { pts: flat, closed: s.closed };
+    });
   }
 
-  // Dots of diameter `w` px on the corners (turns over 30 degrees) and open ends of `subs`.
-  function joins(g, subs, x, y, k, w, col) {
-    var r = w / 2, any = false;
-    g.newPath();
+  // Dots of diameter `w` px on the corners of `subs` (turns over 55 degrees: not the small
+  // turns of a flattened curve). Round joins only: end caps would double the dots.
+  function joins(subs, k, w) {
+    var out = [], r = w / 2;
     for (var i = 0; i < subs.length; i++) {
-      var pts = subs[i].pts, n = pts.length, closed = subs[i].closed;
+      var pts = subs[i].pts || [], n = pts.length, closed = subs[i].closed;
       for (var j = 0; j < n; j++) {
-        var p = pts[j], dot = !closed && (j === 0 || j === n - 1);
-        if (!dot && n > 2) {
+        var p = pts[j], dot = false;
+        if ((closed || (j > 0 && j < n - 1)) && n > 2) {
           var a = pts[(j + n - 1) % n], b = pts[(j + 1) % n];
           var ux = p[0] - a[0], uy = p[1] - a[1], vx = b[0] - p[0], vy = b[1] - p[1];
           var len = Math.sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy));
           dot = len > 1e-9 && (ux * vx + uy * vy) / len < BEND_COS;
         }
-        if (!dot) continue;
-        g.ellipsePath(x + p[0] * k - r, y + p[1] * k - r, w, w);
-        any = true;
+        if (dot) out.push({ e: [r1(p[0] * k - r), r1(p[1] * k - r), r1(w), r1(w)] });
       }
     }
-    if (any) g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, col));
+    return out;
   }
 
-  // Draws `icon` in the size x size square at (x, y). fg and accent are hex colours.
-  function draw(g, icon, x, y, size, fgHex, accentHex) {
-    var fg = U.rgba(fgHex), accent = U.rgba(accentHex);
-    if (typeof icon === "function") return icon(g, x, y, size, fg, accent);
-    if (!U.isArray(icon)) icon = BUILTIN.missing;
-    var k = size / 24;
+  // An icon as paint operations at the origin: [{fill or stroke: colour, w, subs}]. A run of
+  // layers stroked alike becomes one stroke and one fill for its dots (fewer, bigger draw
+  // operations; the order of different colours is kept).
+  function plan(icon, size, fgHex, accentHex) {
+    var fg = U.rgba(fgHex), accent = U.rgba(accentHex), k = size / 24, ops = [], run = null;
+    function same(a, b) { return a.join() === b.join(); }
     for (var i = 0; i < icon.length; i++) {
       var L = typeof icon[i] === "string" ? { d: icon[i] } : icon[i];
       if (!L || !L.d) continue;
@@ -158,16 +165,65 @@ MK.icons = (function () {
       if (!subs.length) continue;
       var stroke = L.stroke || (L.fill ? null : "fg");
       if (L.fill) {
-        tracePath(g, subs, x, y, k);
-        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, withAlpha(color(L.fill, fg, accent), L.alpha)));
+        ops.push({ fill: withAlpha(color(L.fill, fg, accent), L.alpha), subs: toPx(subs, k) });
+        run = null;
       }
       if (stroke) {
-        var col = withAlpha(color(stroke, fg, accent), L.alpha), w = Math.max(1, (L.w || PEN) * k);
-        tracePath(g, subs, x, y, k);
-        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, col, w));
-        if (w >= 1.5) joins(g, subs, x, y, k, w, col);
+        var col = withAlpha(color(stroke, fg, accent), L.alpha), w = r1(Math.max(1, (L.w || PEN) * k));
+        if (!run || !same(run.line.stroke, col) || run.line.w !== w) {
+          run = { line: { stroke: col, w: w, subs: [] }, dots: { fill: col, subs: [] } };
+          ops.push(run.line, run.dots);
+        }
+        run.line.subs = run.line.subs.concat(toPx(subs, k));
+        // Under 2 px a mitred corner looks the same as a round one.
+        if (w >= 2) run.dots.subs = run.dots.subs.concat(joins(subs, k, w));
       }
     }
+    // Neighbours painted alike become one operation; the paint order doesn't change.
+    var out = [];
+    for (var o = 0; o < ops.length; o++) {
+      var op = ops[o], last = out[out.length - 1];
+      if (!op.subs.length) continue;
+      if (last && !op.stroke === !last.stroke && same(op.stroke || op.fill, last.stroke || last.fill) && op.w === last.w) last.subs = last.subs.concat(op.subs);
+      else out.push(op);
+    }
+    return out;
+  }
+
+  // Paints a plan at (x, y). Each operation's path is built once per position and kept
+  // (graphics.currentPath), then handed to fillPath / strokePath as their path argument.
+  function replay(g, ops, x, y) {
+    var at = x + "," + y;
+    for (var i = 0; i < ops.length; i++) {
+      var op = ops[i], paths = op.paths || (op.paths = {}), path = paths[at];
+      if (!path) {
+        g.newPath();
+        for (var s = 0; s < op.subs.length; s++) {
+          var sub = op.subs[s], p = sub.pts;
+          if (sub.e) {
+            g.ellipsePath(x + sub.e[0], y + sub.e[1], sub.e[2], sub.e[3]);
+            continue;
+          }
+          g.moveTo(x + p[0], y + p[1]);
+          for (var j = 2; j < p.length; j += 2) g.lineTo(x + p[j], y + p[j + 1]);
+          if (sub.closed) g.closePath();
+        }
+        path = paths[at] = g.currentPath;
+      }
+      if (op.stroke) g.strokePath(g.newPen(g.PenType.SOLID_COLOR, op.stroke, op.w), path);
+      else g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, op.fill), path);
+    }
+  }
+
+  // Draws `icon` in the size x size square at (x, y). fg and accent are hex colours.
+  function draw(g, icon, x, y, size, fgHex, accentHex) {
+    if (typeof icon === "function") return icon(g, x, y, size, U.rgba(fgHex), U.rgba(accentHex));
+    if (!U.isArray(icon)) icon = BUILTIN.missing;
+    // shortcut: plans live on the icon array and are never evicted (one per size and colour
+    // pair in use); add a size limit if icons ever take arbitrary sizes.
+    var plans = icon.__mkPlans || (icon.__mkPlans = {}), key = size + "|" + fgHex + "|" + accentHex;
+    if (!U.has(plans, key)) plans[key] = plan(icon, size, fgHex, accentHex);
+    replay(g, plans[key], x, y);
   }
 
   // A gear outline: eight flat teeth around the centre of the grid.

@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// The menu widget (MK_PANEL "menu"): a compact panel with a category list, a tool list, Run and
-// Options buttons and the command box. No grid. It follows library changes through `rev`.
+// The menu widget (MK_PANEL "menu", and the Menu view of Motion Kit.jsx): a compact panel with a
+// category list, a tool list, Run and Options buttons and the command box. No grid. It follows
+// library changes through `rev`. `views` ({view, change(next)}) adds the view switcher on top.
 
-MK.ui.buildMenu = function (host) {
+MK.ui.buildMenu = function (host, views) {
   var U = MK.util;
   var CATS = MK.CATEGORIES.concat(["Library"]);
-  var M = { host: host, key: "m" + (++MK.ui.seq), rev: -1, cat: 0, id: null, closed: false, filling: false };
+  var M = { host: host, key: "m" + (++MK.ui.seq), rev: -1, cat: 0, id: null, closed: false, filling: false, views: views || null };
 
   function entries(cat) { return U.filter(MK.catalog(), function (e) { return e.category === cat; }); }
 
@@ -17,14 +18,18 @@ MK.ui.buildMenu = function (host) {
     host.alignChildren = ["fill", "top"];
     host.spacing = 4;
     host.margins = 6;
+    M.viewList = M.views ? MK.ui.viewList(host, undefined, M.views) : null;
+    if (M.viewList) M.viewList.preferredSize = [150, 22];
     var r1 = host.add("group");
     r1.orientation = "row";
     r1.alignChildren = ["left", "center"];
     r1.spacing = 4;
     M.filling = true;
     M.catList = r1.add("dropdownlist", undefined, CATS);
+    M.catList.helpTip = "Category";
     M.catList.selection = M.cat;
     M.toolList = r1.add("dropdownlist", undefined, []);
+    M.toolList.helpTip = "Tool";
     M.toolList.preferredSize = [150, -1];
     M.filling = false;
     M.catList.onChange = function () {
@@ -42,7 +47,9 @@ MK.ui.buildMenu = function (host) {
     r2.orientation = "row";
     r2.spacing = 4;
     M.runBtn = r2.add("button", undefined, "Run");
+    M.runBtn.helpTip = "Run the chosen tool on the selection";
     M.optBtn = r2.add("button", undefined, "Options…");
+    M.optBtn.helpTip = "The chosen tool's options";
     M.gear = r2.add("button", undefined, "⚙");
     M.gear.preferredSize = [28, 22];
     M.gear.helpTip = "Layout & Style…";
@@ -73,7 +80,7 @@ MK.ui.buildMenu = function (host) {
     M.runBtn.enabled = !!M.id;
     M.optBtn.enabled = !!(t && MK.options.has(t));
     var d = M.id ? MK.describe(M.id) : null;
-    M.toolList.helpTip = d ? d.name + " – " + d.description : "";
+    M.toolList.helpTip = d ? d.name + " – " + d.description : "Tool";
   };
 
   M.refresh = function () { if (!M.closed && MK.settings.rev() !== M.rev) M.rebuild(); };

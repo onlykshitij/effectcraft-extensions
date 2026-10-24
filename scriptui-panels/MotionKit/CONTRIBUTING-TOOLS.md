@@ -90,14 +90,15 @@ A widget is a bigger cell with controls of its own, such as sliders or a grid of
 | `w.style`, `w.look` | the panel style (`fg`, `accent`, `radius`...) and the cell's colours |
 | `w.values` | the saved options |
 | `w.editing` | true in edit mode: the panel ignores the widget's controls then |
-| `w.part(name, [x, y, w, h], handlers)` | an interactive control, a custom-drawn `iconbutton`. `handlers`: `tip` (required, the help tip), `draw(g, part)`, `click({shift})`, and for drags `press(x, y)`, `drag(x, y)`, `release()`, with x and y in the part |
+| `w.part(name, [x, y, w, h], handlers)` | an interactive control, a custom-drawn `iconbutton`. `handlers`: `tip` (required, the help tip), `draw(g, part)`, `click({shift})`, and for drags `press(x, y)`, `drag(x, y)`, `release()`, with x and y in the part. `release` returns false when nothing was dragged, and the press then counts as a click |
 | `w.field(name, rect, text, tip, onChange)` | a text field |
 | `w.paint = function (g) {...}` | drawing on the cell's background, such as labels |
 | `w.onShift = function () {...}` | Shift-click (or right-click) anywhere on the widget |
 | `w.save(partial)`, `w.run(options)`, `w.options(toolId)` | save values, run the widget, open a tool's options |
-| `w.hover(control)` | true while the pointer is over it |
 
 Make every interactive part a `part`, never a drawn group: EffectCraft shows a help tip only for custom-drawn controls that aren't containers. The panel feeds parts through its own mouse listeners, so don't add `onClick` or listeners of your own, or a click could run twice. `MK.ui.gfx` has drawing helpers (`box`, `circle`, `text`, `button`), and `MK.THEME` has the fixed theme colours.
+
+Keep redraws cheap. EffectCraft runs every `onDraw` of the panel, lays it out and serialises it after every event it hands the script, so every control, draw operation and path point costs time on every click. Use as few parts as the widget's help tips need, draw icons with `MK.icons.draw` (it caches the flattened paths), and don't draw what can't be seen. The panel listens to `mousemove` only while a drag needs it, so parts don't get hover events.
 
 ## Options
 
@@ -121,7 +122,7 @@ Icons are drawn on a 24 x 24 grid in two colours: `fg` for the base strokes (whi
 | Command | |
 |---|---|
 | `M x y`, `L x y`, `H x`, `V y`, `Z` | move, line, horizontal, vertical, close |
-| `Q x1 y1 x y`, `C x1 y1 x2 y2 x y` | quadratic and cubic Béziers (flattened to 10 segments) |
+| `Q x1 y1 x y`, `C x1 y1 x2 y2 x y` | quadratic and cubic Béziers (flattened to 5 segments) |
 | `A cx cy r a0 a1` | arc in degrees, 0 = +x, clockwise on screen; joins the current point |
 | `O cx cy r`, `E cx cy rx ry` | circle, ellipse |
 | `R x y w h`, `U x y w h r` | rectangle, rounded rectangle |
@@ -195,7 +196,7 @@ These are affine matrices `[a, b, c, d, e, f]`, with `identity`, `mul`, `transla
 ### Other helpers
 
 - `MK.util` has `clamp`, `clone`, `isArray`, `isNum`, `normHex`, `hexToRgb`, `rgbToHex`, `mixHex`, `uniqueName`, `map` and `filter`.
-- `MK.settings.get(key, fallback)` and `MK.settings.set(key, value)` keep tool data, such as a clipboard, under a key named after the tool id. Each save bumps `rev` and every open panel rebuilds.
+- `MK.settings.get(key, fallback)` and `MK.settings.set(key, value)` keep tool data, such as a clipboard, under a key named after the tool id. Each save bumps `rev` and every open panel rebuilds. `MK.settings.setQuiet(key, value)` saves without bumping `rev`, for state only one panel reads (its view).
 - `MK.undo.wrap(name, fn)` is for work outside `run`, such as a button in your own dialog. `run` is already wrapped.
 - `MK.widgets` (`row`, `label`, `swatch`, `colorField`) and `MK.optionsDialog.build(tool, values)` help with dialogs of your own.
 - `MK.prompts.alert` and `MK.prompts.confirm` are what the runner and `ctx.confirm` use. Tests replace them.
@@ -237,12 +238,12 @@ Agents working in parallel build to their own folder and test that build:
 
 ```sh
 cd scriptui-panels/MotionKit
-python3 build.py --out /tmp/me/dist                 # writes the seven bundles there
+python3 build.py --out /tmp/me/dist                 # Motion Kit.jsx, the library, and extra/ with the single panels
 MK_DIST=/tmp/me/dist tests/run_all.sh               # every test against that build
 MK_DIST=/tmp/me/dist tests/run_all.sh test_myTool.jsx test_ui.jsx
 ```
 
-Before handing in, run `python3 build.py` (which updates `dist/`), then `python3 build.py --check` and `tests/run_all.sh`. `run_all.sh` finds the CLI from `$EFFECTCRAFT_CLI`, `effectcraft-cli` on `PATH`, or an EffectCraft checkout next to this repository. It copies the tests and the dist folder into one staging folder, because EffectCraft only lets a script load files from its own folder.
+Before handing in, run `python3 build.py` (which updates `dist/`), then `python3 build.py --check` and `tests/run_all.sh`. `--check` also fails on a bundle the build no longer writes, such as a single panel left at the top of `dist/`. `run_all.sh` finds the CLI from `$EFFECTCRAFT_CLI`, `effectcraft-cli` on `PATH`, or an EffectCraft checkout next to this repository. It copies the tests and the dist folder (with `extra/`) into one staging folder, because EffectCraft only lets a script load files from its own folder. It also runs `tests/test_build.py`, which checks the build itself. `File.exists` answers false in the headless CLI, so a test that needs to know whether a file is there loads it with `$.evalFile`.
 
 ## EffectCraft behaviour worth knowing
 
@@ -258,4 +259,5 @@ These were found while building the core, in EffectCraft 0.14.
 - ScriptUI delivers no key events, and an edit text commits (`onChange`) when it loses focus. Mouse events carry `clientX` / `clientY` relative to the control under the pointer and bubble to its containers.
 - A custom-drawn control (`onDraw` without `drawOSControl()`) shows its `helpTip` unless it is a container (group, panel). A custom-drawn `iconbutton` still gets mousedown, mousemove and mouseup. A click on it reaches the script as a plain `click`, which runs `onClick` only, so a button driven by mouse listeners runs once.
 - EffectCraft draws every script font as regular weight, and pens have no join style.
+- After every event it hands a script, and after every `app.scheduleTask` run, EffectCraft runs all of the script's `onDraw` handlers, lays its windows out and serialises them (draw lists included, twice). Listen to `mousemove`, `mouseover` and `mouseout` only while you need them (`removeEventListener` afterwards): EffectCraft sends only the events some listener wants. `fillPath(brush, path)` and `strokePath(pen, path)` accept a path kept from `graphics.currentPath`, which saves rebuilding it point by point.
 - Dropdown Menu Control exists, but scripts can't set its item names.

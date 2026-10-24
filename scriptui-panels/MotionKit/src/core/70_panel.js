@@ -7,9 +7,14 @@
 // Every cell, and every interactive part of a widget, is an `iconbutton` with onDraw and no
 // drawOSControl: EffectCraft shows the help tip of a custom-drawn control that isn't a
 // container (scriptui_view.rs draw_widget), but not of a custom-drawn group. Input comes only
-// through the grid's mouse listeners (mousedown / mousemove / mouseup bubble up from the cell
-// under the pointer), never onClick, so a click runs once. Every grid control carries its grid
-// position (mkGX, mkGY), which turns an event's clientX / clientY into grid coordinates.
+// through the grid's mouse listeners (mousedown / mouseup bubble up from the cell under the
+// pointer), never onClick, so a click runs once. Every grid control carries its grid position
+// (mkGX, mkGY), which turns an event's clientX / clientY into grid coordinates.
+//
+// Speed: EffectCraft re-runs every onDraw, lays the window out and serialises it after each
+// event it hands the script and after each scheduled task. So a panel listens to mousemove only
+// while a drag needs it (a slider, an edit-mode drag), keeps no hover state, polls every 3 s
+// (and checks on each press), and draws nothing that can't be seen.
 //
 // Edit mode (the pencil; per panel, in memory) is the only time dragging reorders: cells get a
 // dashed outline and a remove button, and a trailing "+" cell opens the Add list. Out of edit
@@ -20,7 +25,7 @@
 
 MK.ui = {};
 MK.ui.seq = 0;
-MK.ui.POLL_MS = 700;
+MK.ui.POLL_MS = 3000;
 MK.ui.DRAG_PX = 4;
 // Header row height, its icon buttons and the layout list's width range, in px.
 MK.ui.HEADER_H = 24;
@@ -29,6 +34,53 @@ MK.ui.DD_MIN = 44;
 MK.ui.DD_MAX = 120;
 // The narrowest header: the layout list at its smallest, the pencil and the gear.
 MK.ui.headerMin = function () { return MK.ui.DD_MIN + 2 * MK.ui.ICON_BTN + 2 * 6; };
+// Header height: one row, or two with the view switcher (title row, then the two lists).
+MK.ui.HEADER_GAP = 4;
+MK.ui.headerHeight = function (views) { return views ? 2 * MK.ui.HEADER_H + MK.ui.HEADER_GAP : MK.ui.HEADER_H; };
+
+// ---- views: Motion Kit.jsx shows one of these in its single Window menu entry. The panel
+// configs 1-4 and the combined config 5 are grids; "menu" is the menu widget. The choice is
+// kept per file, without bumping rev.
+MK.ui.VIEWS = ["combined", "animate", "rig", "shapes", "comp", "menu"];
+MK.ui.VIEW_KEY = "view:Motion Kit.jsx";
+MK.ui.viewLabels = function () {
+  var l = MK.layout.state(), p = l.layouts[l.active].panels;
+  return ["Combined", p[0].title, p[1].title, p[2].title, p[3].title, "Menu"];
+};
+// The view list: a dropdown in `parent` (at `bounds`, or laid out) that switches `views`
+// ({view, change(next)}).
+MK.ui.viewList = function (parent, bounds, views) {
+  var list = parent.add("dropdownlist", bounds, MK.ui.viewLabels());
+  list.selection = Math.max(0, MK.util.indexOf(MK.ui.VIEWS, views.view));
+  list.helpTip = "View: which Motion Kit panel this one shows (all tools, one category, or the menu)";
+  list.onChange = function () {
+    var v = list.selection ? MK.ui.VIEWS[list.selection.index] : null;
+    if (v && v !== views.view) views.change(v);
+  };
+  return list;
+};
+// Shows view `view` in `host` in place of what it showed, and remembers it. Returns the new
+// controller (host.mkPanel).
+MK.ui.showView = function (host, view) {
+  var i = MK.util.indexOf(MK.ui.VIEWS, view), v = i < 0 ? "combined" : view;
+  if (host.mkPanel) host.mkPanel.close();
+  host.onClose = host.mkBaseClose;
+  for (var n = 0; n < 1000 && host.children.length; n++) host.remove(host.children[host.children.length - 1]);
+  var sw = { view: v, change: function (next) { MK.ui.showView(host, next); } };
+  if (v === "menu") MK.ui.buildMenu(host, sw);
+  else MK.ui.buildPanel(host, v === "combined" ? MK.layout.N_PANELS - 1 : MK.util.indexOf(MK.ui.VIEWS, v) - 1, sw);
+  try {
+    if (MK.settings.get(MK.ui.VIEW_KEY, "combined") !== v) MK.settings.setQuiet(MK.ui.VIEW_KEY, v);
+  } catch (e) {
+    MK.prompts.alert(MK.util.errText(e));
+  }
+  try { host.layout.layout(true); } catch (e2) {}
+  return host.mkPanel;
+};
+MK.ui.startViews = function (host) {
+  host.mkBaseClose = host.onClose;
+  return MK.ui.showView(host, MK.settings.get(MK.ui.VIEW_KEY, "combined"));
+};
 MK.ui.dist = function (a, b) { return Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])); };
 // Replaced by tests: how a button opens options, the Layout & Style dialog and the Add list.
 MK.ui.openOptions = function (id) { return MK.optionsDialog.open(id); };
@@ -129,23 +181,39 @@ MK.ui.wrap = function (g, text, font, maxW, maxLines) {
 // Drawing helpers for cells and widgets. Colours are hex; everything goes through U.rgba.
 MK.ui.gfx = (function () {
   var U = MK.util, X = {};
-  function trace(g, pts) {
-    g.newPath();
-    g.moveTo(pts[0][0], pts[0][1]);
-    for (var i = 1; i < pts.length; i++) g.lineTo(pts[i][0], pts[i][1]);
-    g.closePath();
-  }
-  // A rounded rectangle, filled and / or outlined (1 px inside the edge).
-  X.box = function (g, x, y, w, h, r, fill, border, alpha) {
-    if (fill) {
-      trace(g, MK.icons.geom.roundRect(x, y, w, h, r));
-      g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(fill, alpha)));
+  // Points go into every window snapshot: 0.1 px is plenty and keeps the JSON short.
+  function r1(v) { return Math.round(v * 10) / 10; }
+  // One path of rounded rectangles [[x, y, w, h], ...] (corners get a point every 45 degrees,
+  // plenty at these radii), built once per geometry and handed to fillPath / strokePath again
+  // on every redraw.
+  // shortcut: the cache keeps every geometry drawn (a few per layout); clear it if layouts
+  // ever change continuously.
+  var boxes = {};
+  function boxPath(g, rects, r) {
+    var key = r + ":" + rects.join(";");
+    if (!U.has(boxes, key)) {
+      g.newPath();
+      for (var i = 0; i < rects.length; i++) {
+        var pts = MK.icons.geom.roundRect(rects[i][0], rects[i][1], rects[i][2], rects[i][3], r, 45);
+        g.moveTo(r1(pts[0][0]), r1(pts[0][1]));
+        for (var j = 1; j < pts.length; j++) g.lineTo(r1(pts[j][0]), r1(pts[j][1]));
+        g.closePath();
+      }
+      boxes[key] = g.currentPath;
     }
+    return boxes[key];
+  }
+  // Rounded rectangles [[x, y, w, h], ...], filled and / or outlined (1 px inside the edge),
+  // in one draw operation each.
+  X.boxes = function (g, rects, r, fill, border, alpha) {
+    if (!rects.length) return;
+    if (fill) g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(fill, alpha)), boxPath(g, rects, r));
     if (border) {
-      trace(g, MK.icons.geom.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, Math.max(0, r - 0.5)));
-      g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(border, alpha), 1));
+      var inner = U.map(rects, function (q) { return [q[0] + 0.5, q[1] + 0.5, q[2] - 1, q[3] - 1]; });
+      g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(border, alpha), 1), boxPath(g, inner, Math.max(0, r - 0.5)));
     }
   };
+  X.box = function (g, x, y, w, h, r, fill, border, alpha) { X.boxes(g, [[x, y, w, h]], r, fill, border, alpha); };
   X.circle = function (g, cx, cy, r, fill) {
     g.newPath();
     g.ellipsePath(cx - r, cy - r, 2 * r, 2 * r);
@@ -160,41 +228,64 @@ MK.ui.gfx = (function () {
     if (bold && U.EFFECTCRAFT) g.drawString(str, pen, x + 0.6, y, f);
   };
   X.textW = function (g, str, size, bold) { return g.measureString(String(str), X.font(size, bold))[0]; };
-  // A dashed outline 3 px inside a w x h cell (edit mode).
-  X.dashes = function (g, w, h, hex) {
-    var x0 = 3, y0 = 3, x1 = w - 3, y1 = h - 3, on = 4, off = 3, a;
+  // Dashed outlines 3 px inside cells [[x, y, w, h], ...] (edit mode), in one operation.
+  X.dashes = function (g, rects, hex) {
+    var on = 4, off = 3, a;
     g.newPath();
-    for (a = x0; a < x1; a += on + off) { g.moveTo(a, y0); g.lineTo(Math.min(a + on, x1), y0); g.moveTo(a, y1); g.lineTo(Math.min(a + on, x1), y1); }
-    for (a = y0; a < y1; a += on + off) { g.moveTo(x0, a); g.lineTo(x0, Math.min(a + on, y1)); g.moveTo(x1, a); g.lineTo(x1, Math.min(a + on, y1)); }
+    for (var i = 0; i < rects.length; i++) {
+      var x0 = rects[i][0] + 3, y0 = rects[i][1] + 3, x1 = rects[i][0] + rects[i][2] - 3, y1 = rects[i][1] + rects[i][3] - 3;
+      for (a = x0; a < x1; a += on + off) { g.moveTo(a, y0); g.lineTo(Math.min(a + on, x1), y0); g.moveTo(a, y1); g.lineTo(Math.min(a + on, x1), y1); }
+      for (a = y0; a < y1; a += on + off) { g.moveTo(x0, a); g.lineTo(x0, Math.min(a + on, y1)); g.moveTo(x1, a); g.lineTo(x1, Math.min(a + on, y1)); }
+    }
     g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(hex, 0.5), 1));
   };
   // An inner widget button: a filled rounded rectangle with a 24-grid icon at 70 % of its side.
-  X.button = function (g, w, h, r, icon, fg, accent, hover) {
-    X.box(g, 0, 0, w, h, r, hover ? U.mixHex(MK.THEME.button, "#FFFFFF", 0.12) : MK.THEME.button);
+  X.button = function (g, w, h, r, icon, fg, accent) {
+    X.box(g, 0, 0, w, h, r, MK.THEME.button);
     var s = Math.round(Math.min(w, h) * 0.7);
     MK.icons.draw(g, icon, Math.round((w - s) / 2), Math.round((h - s) / 2), s, fg, accent);
   };
-  // The 2 px drop indicator at the left or right edge.
-  X.dropMark = function (g, w, h, right) {
+  // The 2 px drop indicator: a white bar at x, from y, h tall.
+  X.dropMark = function (g, x, y, h) {
     g.newPath();
-    g.rectPath(right ? w - 2 : 0, 0, 2, h);
+    g.rectPath(x, y, 2, h);
     g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba("#FFFFFF")));
   };
   return X;
 })();
 
-// Paints a cell's frame: the rounded background and the border.
-MK.ui.frame = function (g, w, h, style, bg, dimmed) {
-  MK.ui.gfx.box(g, 0, 0, w, h, style.radius, bg, style.cellBorder, dimmed ? 0.45 : 1);
+// Paints the frames of the cells at `rects`: backgrounds that differ from the panel's (bgs[i],
+// one operation per colour), then every border in one operation. Cell `dim` (being dragged)
+// gets a faint border instead.
+MK.ui.frames = function (g, rects, bgs, style, dim) {
+  var G = MK.ui.gfx, byBg = {}, order = [], plain = [];
+  for (var i = 0; i < rects.length; i++) {
+    if (i === dim) continue;
+    plain.push(rects[i]);
+    if (bgs[i] === style.panelBg) continue;
+    if (!MK.util.has(byBg, bgs[i])) {
+      byBg[bgs[i]] = [];
+      order.push(bgs[i]);
+    }
+    byBg[bgs[i]].push(rects[i]);
+  }
+  for (var k = 0; k < order.length; k++) G.boxes(g, byBg[order[k]], style.radius, order[k]);
+  if (style.cellBorder) {
+    G.boxes(g, plain, style.radius, null, style.cellBorder);
+    if (dim >= 0 && rects[dim]) G.boxes(g, [rects[dim]], style.radius, null, style.cellBorder, 0.45);
+  }
 };
 
-// Paints one button. o: {w, h, compact, look, style, hover, dimmed, dropLeft, dropRight, editing}.
+// Paints one button's content: icon and / or name, and the dot. The grid paints the frames.
+// o: {w, h, compact, look, style}.
 MK.ui.paintCell = function (g, o) {
   var U = MK.util, L = o.look, w = o.w, h = o.h, s = o.style.cellSize;
-  MK.ui.frame(g, w, h, o.style, o.hover ? U.mixHex(L.bg, "#FFFFFF", 0.08) : L.bg, o.dimmed);
-  var font = ScriptUI.newFont("dialog", "REGULAR", U.clamp(Math.round(s * 0.24), 9, 12));
-  var lineH = Math.ceil(g.measureString("Ag", font)[1]);
-  var pen = g.newPen(g.PenType.SOLID_COLOR, U.rgba(L.fg), 1);
+  var font = null, lineH = 0, pen = null;
+  if (L.showName) {
+    font = ScriptUI.newFont("dialog", "REGULAR", U.clamp(Math.round(s * 0.24), 9, 12));
+    lineH = Math.ceil(g.measureString("Ag", font)[1]);
+    pen = g.newPen(g.PenType.SOLID_COLOR, U.rgba(L.fg), 1);
+  }
   var isz = Math.round(s * (o.compact ? 0.6 : L.showName ? 0.55 : 0.62));
   var drawIcon = function (x, y) {
     if (L.image) {
@@ -225,8 +316,6 @@ MK.ui.paintCell = function (g, o) {
     for (var i = 0; i < lines.length; i++) g.drawString(lines[i], pen, Math.round((w - g.measureString(lines[i], font)[0]) / 2), y0 + i * lineH, font);
   }
   if (L.dot) MK.ui.gfx.circle(g, w - 7, 7, 3, L.accent);
-  if (o.editing) MK.ui.gfx.dashes(g, w, h, L.fg);
-  if (o.dropLeft || o.dropRight) MK.ui.gfx.dropMark(g, w, h, !o.dropLeft);
 };
 
 // A small square header or edit button: an icon from MK.icons.builtin, centred.
@@ -279,7 +368,8 @@ MK.ui.buildAddList = function (panelIndex) {
 
 // The API a widget's build(w) gets for its cell: its size and style, its saved values, and
 // part() / field() to add interactive controls. Parts are iconbuttons the panel's mouse
-// listeners drive: click({shift}), press(x, y), drag(x, y) and release() (x, y in the part).
+// listeners drive: click({shift}), press(x, y), drag(x, y) and release() (x, y in the part;
+// release returns false when the press turned out to be a click).
 MK.ui.widgetApi = function (P, tool, cell, index, rect, look, style) {
   var W = {
     id: tool.id, tool: tool, cell: cell, index: index, w: rect[2], h: rect[3], style: style, look: look,
@@ -310,7 +400,6 @@ MK.ui.widgetApi = function (P, tool, cell, index, rect, look, style) {
     P.refresh();
     return r;
   };
-  W.hover = function (ctl) { return P.hoverCtl === ctl; };
   W.part = function (name, r, h) {
     var b = cell.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
     b.preferredSize = [r[2], r[3]];
@@ -347,10 +436,11 @@ MK.ui.widgetApi = function (P, tool, cell, index, rect, look, style) {
 };
 
 // Builds panel `index` (0-4) of the active layout into `host` (a Panel or a palette Window).
-// Returns the controller {host, index, rebuild(), items(), cells, grid, ...}.
-MK.ui.buildPanel = function (host, index) {
+// `views` ({view, change(next)}) adds the view switcher. Returns the controller {host, index,
+// rebuild(), items(), cells, grid, ...}.
+MK.ui.buildPanel = function (host, index, views) {
   var U = MK.util, G = MK.ui.gfx;
-  var P = { host: host, index: index, rev: -1, cols: 4, cells: [], widgets: [], drag: null, hover: -1, hoverCtl: null, closed: false, filling: false, editing: false };
+  var P = { host: host, index: index, rev: -1, cols: 4, cells: [], widgets: [], drag: null, held: null, closed: false, filling: false, editing: false, views: views || null };
   P.key = "p" + (++MK.ui.seq);
 
   P.layout = function () { return P.state.layouts[P.state.active]; };
@@ -361,18 +451,23 @@ MK.ui.buildPanel = function (host, index) {
   }
 
   // The title row, exactly `width` wide: title, layout list, pencil and gear at fixed places.
-  // The list shrinks, then the title, so it never gets wider than `width`.
+  // The list shrinks, then the title, so it never gets wider than `width`. With the view
+  // switcher the title row has the title and the buttons, and a second row the view list and
+  // the layout list, half each.
   function header(parent, pc, width) {
     var H = MK.ui.HEADER_H, B = MK.ui.ICON_BTN, GAP = 6, st = P.state, style = pc.style;
     var hdr = parent.add("group");
     hdr.orientation = "stack";
     hdr.margins = 0;
-    hdr.preferredSize = [width, H];
+    hdr.preferredSize = [width, MK.ui.headerHeight(P.views)];
     hdr.mkRole = "header";
     P.header = hdr;
     var avail = width - 2 * B - 2 * GAP, need = Math.ceil(pc.title.length * 14 * 0.7) + 2;
-    var dd = avail >= MK.ui.DD_MIN ? Math.min(MK.ui.DD_MAX, Math.max(MK.ui.DD_MIN, avail - need - GAP)) : 0;
-    var tw = Math.max(0, avail - (dd ? dd + GAP : 0));
+    var dd = P.views ? Math.floor((width - GAP) / 2) : avail >= MK.ui.DD_MIN ? Math.min(MK.ui.DD_MAX, Math.max(MK.ui.DD_MIN, avail - need - GAP)) : 0;
+    var tw = P.views ? avail : Math.max(0, avail - (dd ? dd + GAP : 0));
+    // Where the layout list goes: beside the title, or on the second row after the view list.
+    var lx = P.views ? width - dd : tw + GAP, ly = P.views ? H + MK.ui.HEADER_GAP : 0;
+    P.viewList = P.views ? MK.ui.viewList(hdr, [0, ly + 1, dd, ly + H - 1], P.views) : null;
     P.title = hdr.add("statictext", [0, 0, tw, H], pc.title);
     P.title.helpTip = pc.title + ": panel " + (P.index + 1) + " of the \"" + st.active + "\" layout";
     P.title.onDraw = function () {
@@ -383,7 +478,7 @@ MK.ui.buildPanel = function (host, index) {
     if (dd) {
       var names = U.keys(st.layouts);
       P.filling = true;
-      var list = hdr.add("dropdownlist", [tw + GAP, 1, tw + GAP + dd, H - 1], names);
+      var list = hdr.add("dropdownlist", [lx, ly + 1, lx + dd, ly + H - 1], names);
       list.selection = U.indexOf(names, st.active);
       list.helpTip = "Layout: pick one to switch every panel to it";
       P.filling = false;
@@ -428,14 +523,29 @@ MK.ui.buildPanel = function (host, index) {
     P.cols = geo.cols;
     P.cells = [];
     P.widgets = [];
+    var bgs = [];
+    // The frames, edit-mode outlines and the drop mark of every cell, under the cells: one
+    // draw operation each instead of a few per cell.
+    g.onDraw = function () {
+      var gr = this.graphics, d = P.drag, dragging = d && d.moved, R = geo.rects.slice(0, n);
+      MK.ui.frames(gr, R, bgs, style, dragging ? d.from : -1);
+      if (P.editing) G.dashes(gr, R, style.fg);
+      if (dragging && d.slot >= 0 && n) {
+        var at = R[Math.min(d.slot, n - 1)];
+        G.dropMark(gr, d.slot < n ? at[0] : at[0] + at[2] - 2, at[1], at[3]);
+      }
+    };
     for (var i = 0; i < n; i++) {
       var r = geo.rects[i], look = MK.ui.look(items[i], style, P.state.library), cell;
+      bgs.push(look.bg);
       if (look.tool && look.tool.kind === "widget") cell = widgetCell(g, i, r, look, style);
       else {
         cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
         cell.helpTip = look.name + " – " + look.description +
           (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + (P.editing ? "\nDrag to reorder." : "");
         cell.onDraw = paint;
+        // What it shows only changes with the settings, which rebuild the panel.
+        cell.mkLook = look;
       }
       cell.preferredSize = [r[2], r[3]];
       cell.mkRole = "cell";
@@ -459,8 +569,7 @@ MK.ui.buildPanel = function (host, index) {
       };
       add.onDraw = function () {
         var gr = this.graphics;
-        if (P.hoverCtl === add) MK.ui.frame(gr, ra[2], ra[3], style, U.mixHex(style.cellBg, "#FFFFFF", 0.08));
-        G.dashes(gr, ra[2], ra[3], style.fg);
+        G.dashes(gr, [[0, 0, ra[2], ra[3]]], style.fg);
         var s = Math.round(Math.min(ra[2], ra[3]) * 0.4);
         MK.icons.draw(gr, MK.icons.builtin.plus, Math.round((ra[2] - s) / 2), Math.round((ra[3] - s) / 2), s, style.fg, style.accent);
       };
@@ -479,14 +588,12 @@ MK.ui.buildPanel = function (host, index) {
         rm.mkGX = x;
         rm.mkGY = y;
         rm.mkClick = removeAt(j);
-        rm.onDraw = function () { MK.ui.paintGlyph(this.graphics, 14, 14, MK.icons.builtin.close, "#FFFFFF", P.hoverCtl === this ? style.accent : MK.THEME.button); };
+        rm.onDraw = function () { MK.ui.paintGlyph(this.graphics, 14, 14, MK.icons.builtin.close, "#FFFFFF", MK.THEME.button); };
         P.removeButtons.push(rm);
       }
     }
     g.addEventListener("mousedown", down);
-    g.addEventListener("mousemove", move);
     g.addEventListener("mouseup", up);
-    g.addEventListener("mouseout", out);
   }
 
   function removeAt(i) {
@@ -500,28 +607,13 @@ MK.ui.buildPanel = function (host, index) {
     };
   }
 
-  // Drag state shown on cell i: hover, dimmed while dragged, drop marks (insertion slot s is the
-  // left edge of item s, or the right edge of the last item).
-  function state(i) {
-    var d = P.drag, dragging = d && d.moved, n = P.items().length;
-    return {
-      hover: !dragging && P.hover === i && !P.editing, dimmed: dragging && d.from === i, editing: P.editing,
-      dropLeft: dragging && d.slot === i, dropRight: dragging && d.slot === n && i === n - 1
-    };
-  }
-
   function paint() {
-    var i = this.mkIndex, items = P.items(), pc = P.layout().panels[P.index];
-    if (!items[i]) return;
-    var s = state(i), r = P.geo.rects[i];
-    MK.ui.paintCell(this.graphics, {
-      w: r[2], h: r[3], compact: P.sz.compact, style: pc.style, look: MK.ui.look(items[i], pc.style, P.state.library),
-      hover: s.hover, dimmed: s.dimmed, editing: s.editing, dropLeft: s.dropLeft, dropRight: s.dropRight
-    });
+    var r = P.geo.rects[this.mkIndex];
+    MK.ui.paintCell(this.graphics, { w: r[2], h: r[3], compact: P.sz.compact, style: P.layout().panels[P.index].style, look: this.mkLook });
   }
 
-  // A widget's cell: a group with the frame, the widget's parts on top. A widget that fails to
-  // build shows its frame and says why in its help tip.
+  // A widget's cell: a group holding the widget's parts, over the frame the grid paints. A
+  // widget that fails to build says why in its help tip.
   function widgetCell(g, i, r, look, style) {
     var cell = g.add("group", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
     cell.orientation = "stack";
@@ -534,13 +626,7 @@ MK.ui.buildPanel = function (host, index) {
     } catch (e) {
       cell.helpTip = look.name + " couldn't be built: " + U.errText(e);
     }
-    cell.onDraw = function () {
-      var gr = this.graphics, s = state(i);
-      MK.ui.frame(gr, r[2], r[3], style, look.bg, s.dimmed);
-      if (W.paint) W.paint(gr);
-      if (s.editing) G.dashes(gr, r[2], r[3], look.fg);
-      if (s.dropLeft || s.dropRight) G.dropMark(gr, r[2], r[3], !s.dropLeft);
-    };
+    if (W.paint) cell.onDraw = function () { W.paint(this.graphics); };
     return cell;
   }
 
@@ -583,16 +669,41 @@ MK.ui.buildPanel = function (host, index) {
 
   function isWidget(i) { return !!P.widgets[i]; }
 
+  // The same control across a rebuild (which makes new ones): same role, item and part.
+  function same(a, b) { return !!a && !!b && a.mkRole === b.mkRole && a.mkIndex === b.mkIndex && a.mkPart === b.mkPart; }
+
+  // At rest a panel listens to mousedown and mouseup on its grid only: EffectCraft sends, and
+  // redraws the panel after, just the events listeners want. While a press lasts the host also
+  // hears the release (outside the grid too) and, when a drag needs it, the grid hears mousemove.
+  function hold(moves) {
+    letGo();
+    host.addEventListener("mouseup", outside);
+    if (moves) P.grid.addEventListener("mousemove", move);
+    P.held = { moves: moves, grid: P.grid };
+  }
+  function letGo() {
+    if (!P.held) return;
+    host.removeEventListener("mouseup", outside);
+    if (P.held.moves) P.held.grid.removeEventListener("mousemove", move);
+    P.held = null;
+  }
+  P.follows = function () { return !!(P.held && P.held.moves); };
+
   function down(e) {
     var xy = gridXY(e), t = e.target;
     if (!xy) return;
+    // Catch up with settings saved elsewhere first. The press then goes to whatever is at the
+    // same place in the rebuilt grid.
+    if (MK.settings.rev() !== P.rev) P.rebuild();
     var i = cellAt(xy), opt = e.shiftKey || e.button === 2;
     if (t.mkRole === "remove" || t.mkRole === "add") {
       P.drag = { button: t };
+      hold(false);
       return;
     }
     if (P.editing) {
       P.drag = i >= 0 ? { from: i, start: xy, moved: false, slot: -1 } : null;
+      if (P.drag) hold(true);
       return;
     }
     if (t.mkRole === "field") {
@@ -602,15 +713,15 @@ MK.ui.buildPanel = function (host, index) {
     if (t.mkRole === "part") {
       P.drag = { part: t, shift: opt };
       if (!opt && t.mkPress) t.mkPress(xy[0] - t.mkGX, xy[1] - t.mkGY);
+      hold(!opt && !!t.mkDrag);
       return;
     }
     P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt };
+    hold(false);
   }
 
   function move(e) {
     var xy = gridXY(e), d = P.drag;
-    P.hover = xy ? cellAt(xy) : -1;
-    P.hoverCtl = e.target;
     if (!d || !xy) return;
     if (d.part) {
       if (!d.shift && d.part.mkDrag) d.part.mkDrag(xy[0] - d.part.mkGX, xy[1] - d.part.mkGY);
@@ -622,29 +733,25 @@ MK.ui.buildPanel = function (host, index) {
     if (d.moved) d.slot = slotAt(xy);
   }
 
-  function out(e) {
-    if (e.target === P.hoverCtl) P.hoverCtl = null;
-    if (e.target && e.target.mkRole === "cell" && e.target.mkIndex === P.hover) P.hover = -1;
-  }
-
   // Ends a part's press: a slider's release, or a click when released on the same part.
   function endPart(d, t) {
     var W = P.widgets[d.part.mkIndex];
     if (d.shift && W && W.onShift) {
-      if (t === d.part) W.onShift();
+      if (same(t, d.part)) W.onShift();
       return;
     }
-    if (!d.shift && d.part.mkRelease) d.part.mkRelease();
-    else if (t === d.part && d.part.mkClick) d.part.mkClick({ shift: d.shift });
+    // A release handler returns false when nothing was dragged: then it is a click.
+    if (!d.shift && d.part.mkRelease && d.part.mkRelease() !== false) return;
+    if (same(t, d.part) && t.mkClick) t.mkClick({ shift: d.shift });
   }
 
   function up(e) {
-    e.mkOnGrid = true;
+    letGo();
     var d = P.drag, xy = gridXY(e), t = e.target;
     P.drag = null;
     if (!d) return;
     if (d.button) {
-      if (t === d.button) d.button.mkClick();
+      if (same(t, d.button) && t.mkClick) t.mkClick();
       return;
     }
     if (d.part) {
@@ -671,7 +778,6 @@ MK.ui.buildPanel = function (host, index) {
     }
     P.activate(d.from, options);
   }
-
   // Runs button i (or opens its options).
   P.activate = function (i, options) {
     var item = P.items()[i];
@@ -708,9 +814,8 @@ MK.ui.buildPanel = function (host, index) {
     P.state = MK.layout.state();
     P.rev = MK.settings.rev();
     var pc = P.layout().panels[P.index], style = pc.style, n = pc.items.length;
+    letGo();
     P.drag = null;
-    P.hover = -1;
-    P.hoverCtl = null;
     P.commandBox = null;
     P.header = null;
     clear();
@@ -736,7 +841,8 @@ MK.ui.buildPanel = function (host, index) {
     P.body = body;
     // An empty panel always shows its "+" cell and title row, or nothing could add buttons.
     var geo = MK.ui.geometry(pc.items, style, P.editing || !n ? 1 : 0);
-    var showHeader = !style.hideTitle || !n;
+    // With the view switcher the header always shows: it is the only way to another view.
+    var showHeader = !style.hideTitle || !n || !!P.views;
     // The header is as wide as the grid, but keeps room for its buttons and the layout list.
     var width = Math.max(geo.w, showHeader ? MK.ui.headerMin() : 0);
     if (showHeader) header(body, pc, width);
@@ -759,12 +865,12 @@ MK.ui.buildPanel = function (host, index) {
   };
 
   // A release outside the grid: a drag is dropped, a slider being dragged still commits.
-  host.addEventListener("mouseup", function (e) {
-    if (e.mkOnGrid) return;
+  function outside() {
+    letGo();
     var d = P.drag;
     P.drag = null;
     if (d && d.part && !d.shift && d.part.mkRelease) d.part.mkRelease();
-  });
+  }
   var prevClose = host.onClose;
   host.onClose = function () {
     P.close();
@@ -795,8 +901,8 @@ MK.ui.tick = function (key) {
   return true;
 };
 
-// The entry point: builds the UI for a dist file. panel is MK_PANEL (1-4, "all" for the
-// combined panel 5, "menu", or null for no UI). In an installed panel `thisObj` is the Panel;
+// The entry point: builds the UI for a dist file. panel is MK_PANEL (1-4, "all" for
+// Motion Kit.jsx with its view switcher, "menu", or null for no UI). In an installed panel `thisObj` is the Panel;
 // from File > Scripts it is not, and a palette window opens.
 MK.ui.start = function (thisObj, panel) {
   if (panel === null) return null;
@@ -805,7 +911,8 @@ MK.ui.start = function (thisObj, panel) {
   var p = panel === undefined ? 1 : panel === "all" ? MK.layout.N_PANELS : panel;
   var title = p === "menu" ? MK.NAME + " Menu" : p === MK.layout.N_PANELS ? MK.NAME : MK.NAME + " " + p;
   var host = isPanel ? thisObj : new Window("palette", title, undefined, { resizeable: true });
-  if (p === "menu") MK.ui.buildMenu(host);
+  if (panel === "all") MK.ui.startViews(host);
+  else if (p === "menu") MK.ui.buildMenu(host);
   else MK.ui.buildPanel(host, MK.util.clamp((Math.round(Number(p)) || 1) - 1, 0, MK.layout.N_PANELS - 1));
   if (host instanceof Window) {
     host.center();

@@ -119,16 +119,8 @@ MK.layoutDialog = (function () {
       list.onDraw = drawList(D);
       D.lists.push(list);
     }
-    cols.addEventListener("mousedown", function (e) {
-      var t = e.target;
-      if (!t || t.mkRole !== "list") return;
-      var i = Math.floor(e.clientY / ROW_H), n = D.pc(t.mkCol).items.length;
-      D.panel = t.mkCol;
-      D.sel = i >= 0 && i < n ? i : -1;
-      D.drag = D.sel >= 0 ? { from: D.sel, panel: D.panel, y: e.clientY, x: e.clientX, moved: false, to: -1, slot: -1 } : null;
-      D.sync();
-    });
-    cols.addEventListener("mousemove", function (e) {
+    // mousemove only during a drag: EffectCraft redraws the script's windows after every event.
+    function moved(e) {
       var d = D.drag, t = e.target;
       if (!d || !t || t.mkRole !== "list") return;
       if (!d.moved && (t.mkCol !== d.panel || MK.ui.dist([e.clientX, e.clientY], [d.x, d.y]) > MK.ui.DRAG_PX)) d.moved = true;
@@ -136,10 +128,27 @@ MK.layoutDialog = (function () {
         d.to = t.mkCol;
         d.slot = U.clamp(Math.round(e.clientY / ROW_H), 0, D.pc(t.mkCol).items.length);
       }
+    }
+    function stop() { cols.removeEventListener("mousemove", moved); }
+    cols.addEventListener("mousedown", function (e) {
+      var t = e.target;
+      if (!t || t.mkRole !== "list") return;
+      var i = Math.floor(e.clientY / ROW_H), n = D.pc(t.mkCol).items.length;
+      D.panel = t.mkCol;
+      D.sel = i >= 0 && i < n ? i : -1;
+      D.drag = D.sel >= 0 ? { from: D.sel, panel: D.panel, y: e.clientY, x: e.clientX, moved: false, to: -1, slot: -1 } : null;
+      stop();
+      if (D.drag) cols.addEventListener("mousemove", moved);
+      D.sync();
+    });
+    D.win.addEventListener("mouseup", function () {
+      stop();
+      D.drag = null;
     });
     cols.addEventListener("mouseup", function (e) {
       var d = D.drag, t = e.target;
       D.drag = null;
+      stop();
       if (!d || !d.moved || !t || t.mkRole !== "list") return;
       var to = t.mkCol, slot = U.clamp(Math.round(e.clientY / ROW_H), 0, D.pc(to).items.length);
       D.move(d.panel, d.from, to, to === d.panel && slot > d.from ? slot - 1 : slot);

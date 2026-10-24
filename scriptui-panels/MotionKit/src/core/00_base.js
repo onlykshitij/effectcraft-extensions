@@ -89,11 +89,16 @@ MK.util = (function () {
   U.EFFECTCRAFT = typeof BridgeTalk !== "undefined" && BridgeTalk.appName === "effectcraft";
   U.LINEAR_UI = U.EFFECTCRAFT;
   function toLinear(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
-  // [r, g, b, a] for ScriptUI pens and brushes.
+  // Channels to 4 decimals: every draw call goes into the window snapshot's JSON.
+  function r4(v) { return Math.round(v * 10000) / 10000; }
+  var rgbaCache = {};
+  // [r, g, b, a] for ScriptUI pens and brushes (cached; don't change the array).
   U.rgba = function (hex, alpha) {
+    var key = hex + "/" + alpha;
+    if (U.has(rgbaCache, key)) return rgbaCache[key];
     var c = U.hexToRgb(hex) || [0.5, 0.5, 0.5];
     if (U.LINEAR_UI) c = [toLinear(c[0]), toLinear(c[1]), toLinear(c[2])];
-    return [c[0], c[1], c[2], alpha === undefined ? 1 : alpha];
+    return (rgbaCache[key] = [r4(c[0]), r4(c[1]), r4(c[2]), alpha === undefined ? 1 : r4(alpha)]);
   };
   // Blend two hex colours (t = 0 gives a, 1 gives b).
   U.mixHex = function (a, b, t) {

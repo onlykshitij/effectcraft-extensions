@@ -2,8 +2,9 @@
 // Panels: the combined panel's packed grid, panels laid out to their content (the root bounds
 // EffectCraft reports are the header plus the packed grid), edit mode (no reorder when off,
 // reorder when on, the remove button, the "+" cell and its Add list), a click running a tool
-// exactly once in the order the host sends events, and a help tip on every interactive control
-// of every panel.
+// exactly once in the order the host sends events, a help tip on every interactive control of
+// every panel, and the work a redraw costs: no pointer-movement events at rest (mousemove only
+// during a drag), few path points, and settings checked on every press.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var L = MotionKit.layout, U = MotionKit.helpers.util, UI = MotionKit.ui;
 var opened = [];
@@ -15,7 +16,7 @@ function size(w) {
 }
 
 var wins = [];
-for (var n = 1; n <= 4; n++) wins.push($.evalFile(MKT_DIR + "/dist/Motion Kit " + n + ".jsx"));
+for (var n = 1; n <= 4; n++) wins.push($.evalFile(MKT_DIR + "/dist/extra/Motion Kit " + n + ".jsx"));
 wins.push($.evalFile(MKT_DIR + "/dist/Motion Kit.jsx"));
 var W5 = wins[4], P5 = W5.mkPanel, W4 = wins[3], P4 = W4.mkPanel;
 var style = L.get().panels[4].style, c = style.cellSize, sp = style.spacing, H = UI.HEADER_H;
@@ -32,7 +33,10 @@ T.check(kinds === "group,group,group,group,group,iconbutton" && P5.widgets.lengt
 var s4 = size(W4), s5 = size(W5);
 T.check(P4.cols === 4 && P4.geo.w === 4 * c + 3 * sp && P4.geo.h === c, "the 4-tool panel's grid is 4 cells wide, one row");
 T.check(s4[0] === 4 * c + 3 * sp + 2 * sp && s4[1] === sp + H + sp + c + sp && s4[0] === 274 && s4[1] === 110, "its root bounds are the header plus the grid plus margins: " + s4.join(" x "));
-T.check(P5.geo.h === 9 * c + 8 * sp && s5[0] === 274 && s5[1] === sp + H + sp + P5.geo.h + sp && s5[1] === 638, "the combined panel's root bounds (9 rows): " + s5.join(" x "));
+// Motion Kit.jsx has the view switcher: a second header row (the view and layout lists).
+var H2 = 2 * H + UI.HEADER_GAP;
+T.check(P5.views && P5.header.preferredSize[1] === H2 && H2 === 52, "Motion Kit.jsx's header has two rows (" + H2 + " px)");
+T.check(P5.geo.h === 9 * c + 8 * sp && s5[0] === 274 && s5[1] === sp + H2 + sp + P5.geo.h + sp && s5[1] === 666, "the combined panel's root bounds (9 rows): " + s5.join(" x "));
 T.check(P4.header.preferredSize[0] === P4.geo.w && P5.header.preferredSize[0] === P5.geo.w, "the header is exactly as wide as the grid");
 L.save(L.removeItem(L.removeItem(L.removeItem(L.removeItem(L.get(), 2, 5), 2, 4), 2, 3), 2, 2));
 MotionKit.__tick(wins[2].mkPanel.key);
@@ -66,23 +70,27 @@ var start = order(4);
 T.mouse(W5, P5.cells[5], "mousedown", 10, 10);
 T.mouse(W5, P5.cells[6], "mousemove", c - 2, 10);
 T.mouse(W5, P5.cells[6], "mouseup", c - 2, 10);
-var track = P5.widgets[0].sliders.easeIn.track;
-T.mouse(W5, track, "mousedown", 10, 10);
+var sl = P5.widgets[0].sliders.easeIn, track = sl.track;
+T.mouse(W5, track, "mousedown", sl.x0 + 10, 10);
 T.mouse(W5, P5.cells[1], "mousemove", 30, 10);
 T.mouse(W5, P5.cells[1], "mouseup", 30, 10);
 T.check(order(4) === start && !P5.editing && !P5.removeButtons.length && !P5.addCell, "out of edit mode, drags (a button, a slider) never reorder; no remove buttons, no + cell");
 
 // ---- edit mode on: dashed outlines, remove buttons, the + cell; widgets don't take input
+// The grid's stroke operations (the frames, and in edit mode the dashed outlines).
 function strokes() {
   __uiSnapshot();
-  return U.map(P5.cells, function (x) { return U.filter(x.__draw || [], function (op) { return op.op === "stroke"; }).length; });
+  return U.filter(P5.grid.__draw || [], function (op) { return op.op === "stroke"; });
 }
 var plain = strokes();
 T.mouse(W5, P5.pencil, "click", 5, 5);
 T.check(P5.editing && P5.removeButtons.length === P5.items().length && P5.addCell && /Remove Ease/.test(P5.removeButtons[0].helpTip), "the pencil turns edit mode on: a remove button per cell and a + cell");
-var edited = strokes(), dashed = true;
-for (var i = 0; i < P5.cells.length; i++) if (edited[i] !== plain[i] + 1) dashed = false;
-T.check(dashed, "every cell draws one more outline: the dashed one");
+var edited = strokes(), dashes = edited.length === plain.length + 1 ? edited[edited.length - 1].path : [], dashed = true;
+for (var i = 0; i < P5.cells.length; i++) {
+  var r = P5.geo.rects[i], inCell = U.filter(dashes, function (seg) { return seg.k === "M" && seg.x >= r[0] && seg.x <= r[0] + r[2] && seg.y >= r[1] && seg.y <= r[1] + r[3]; });
+  if (inCell.length < 8) dashed = false;
+}
+T.check(dashed, "every cell gets a dashed outline (one more operation on the grid)");
 T.check(!P5.widgets[4].amount.enabled && !P5.widgets[4].step.enabled, "the sequencer's fields are disabled while editing");
 var easeBefore = MotionKit.options.get("ease").easeIn;
 // Drag the Ease widget, starting on its slider, past Key Copy/Paste (right half).
@@ -138,6 +146,59 @@ MotionKit.__tick(P4.key);
 T.check(P4.header && P4.addCell && P4.cells.length === 0 && P4.layoutList, "an empty panel shows its title row (with the layout list) and the + cell");
 L.resetAll();
 for (var k2 = 0; k2 < 5; k2++) MotionKit.__tick(wins[k2].mkPanel.key);
+
+// ---- what a redraw costs: EffectCraft redraws after every event a listener wants
+// The pointer events the controls of window w ask EffectCraft for, from its serialised tree.
+function wanted(w) {
+  var all = {}, controls = 0, listening = 0;
+  (function walk(o) {
+    controls++;
+    if (o.mouse && o.mouse.length) listening++;
+    for (var i = 0; i < (o.mouse || []).length; i++) all[o.mouse[i]] = true;
+    for (var j = 0; j < (o.children || []).length; j++) walk(o.children[j]);
+  })(JSON.parse(JSON.stringify(__uiJson(w))));
+  return { kinds: U.keys(all).sort().join(","), controls: controls, listening: listening };
+}
+var idle = true;
+for (var w5 = 0; w5 < 5; w5++) if (/mousemove|mouseover|mouseout/.test(wanted(wins[w5]).kinds)) idle = false;
+var at = wanted(W5);
+T.check(idle && at.kinds === "mousedown,mouseup", "at rest no panel asks for mousemove, mouseover or mouseout (combined panel: " + at.kinds + ")");
+T.check(at.listening < at.controls && !wanted(W5).kinds.match(/move/) && P5.header && !/mouse/.test(JSON.stringify(__uiJson(P5.header))), "only the grid listens at rest: the header gets no pointer events at all");
+var es = P5.widgets[0].sliders.easeOut;
+T.mouse(W5, es.track, "mousedown", es.x0 + 20, 10);
+T.check(/mousemove/.test(wanted(W5).kinds) && P5.follows(), "a slider press adds mousemove for the drag");
+T.mouse(W5, es.track, "mousemove", es.x0 + 25, 10);
+T.mouse(W5, P5.title, "mouseup", 5, 5);
+T.check(wanted(W5).kinds === "mousedown,mouseup" && !P5.follows(), "a release, even outside the grid, removes it again");
+T.mouse(W5, P5.cells[5], "mousedown", 10, 10);
+T.check(wanted(W5).kinds === "mousedown,mouseup", "pressing a button (no drag to follow) adds no mousemove");
+T.mouse(W5, P5.cells[5], "mouseup", 10, 10);
+P5.setEditing(true);
+T.mouse(W5, P5.cells[5], "mousedown", 10, 10);
+T.check(/mousemove/.test(wanted(W5).kinds), "an edit-mode press adds mousemove for the drag");
+T.mouse(W5, P5.cells[5], "mouseup", 10, 10);
+T.check(wanted(W5).kinds === "mousedown,mouseup", "and its release removes it");
+P5.setEditing(false);
+L.resetAll();
+MotionKit.__tick(P5.key);
+__uiSnapshot();
+var points = 0;
+(function walk(x) {
+  for (var d = 0; d < (x.__draw || []).length; d++) points += (x.__draw[d].path || []).length;
+  for (var i = 0; i < (x.children || []).length; i++) walk(x.children[i]);
+})(W5);
+T.check(points > 300 && points < 1500, "the combined panel draws " + points + " path points (under 1,500)");
+// Settings saved elsewhere are picked up on the next press, without waiting for the poll.
+T.check(UI.POLL_MS === 3000, "panels poll the settings every 3 s");
+L.save(L.moveItem(L.get(), 4, 5, 4, 7));
+T.check(P5.rev !== MotionKit.settings.rev() && P5.cells[5].mkId === "bounce", "another panel saved: this one is behind");
+T.mouse(W5, P5.cells[5], "mousedown", 10, 10);
+T.check(P5.rev === MotionKit.settings.rev() && P5.cells[5].mkId === "elastic", "a press checks the settings first and rebuilds");
+T.alerts = [];
+T.mouse(W5, P5.cells[5], "mouseup", 10, 10);
+T.check(/^Elastic: open a composition first/.test(T.lastAlert()), "and the click acts on what is there now: " + T.lastAlert());
+L.resetAll();
+MotionKit.__tick(P5.key);
 
 // ---- help tips: every interactive control in every panel, in and out of edit mode
 var INTERACTIVE = { iconbutton: 1, button: 1, edittext: 1, dropdownlist: 1, listbox: 1, checkbox: 1, radiobutton: 1, slider: 1 };

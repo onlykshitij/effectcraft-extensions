@@ -52,5 +52,15 @@ MK.settings = (function () {
     return setMany(m);
   }
 
-  return { SECTION: SECTION, get: get, set: set, setMany: setMany, rev: rev };
+  // Saves one key without bumping rev, for state only its own panel reads (the view a panel
+  // shows), so the other panels don't rebuild.
+  function setQuiet(key, value) {
+    try {
+      app.settings.saveSetting(SECTION, key, JSON.stringify(value));
+    } catch (e) {
+      MK.fail("Motion Kit couldn't save its settings (" + key + "): " + MK.util.errText(e));
+    }
+  }
+
+  return { SECTION: SECTION, get: get, set: set, setQuiet: setQuiet, setMany: setMany, rev: rev };
 })();

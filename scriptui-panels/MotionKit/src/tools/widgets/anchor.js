@@ -29,36 +29,43 @@
       var gap = Math.max(3, Math.round(w.w * 0.05)), side = Math.min(w.w, w.h);
       var sq = Math.max(8, Math.floor((side - 2 * Math.round(side * 0.08) - 2 * gap) / 3));
       var x0 = Math.round((w.w - 3 * sq - 2 * gap) / 2), y0 = Math.round((w.h - 3 * sq - 2 * gap) / 2);
+      var at = {}, inset = Math.max(3, Math.round(sq * 0.16));
       w.onShift = function () { w.options("moveAnchor"); };
       w.squares = {};
+      // The squares are painted together on the widget (four draw operations, not two per
+      // square); the parts on top are invisible and carry the clicks and help tips.
+      w.paint = function (g) {
+        var c = at.c, k, p;
+        g.newPath();
+        g.rectPath(c[0], c[1], sq, sq);
+        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchorEdge)));
+        g.newPath();
+        for (k in at) if (U.has(at, k)) {
+          p = at[k];
+          if (k === "c") g.rectPath(p[0] + inset, p[1] + inset, sq - 2 * inset, sq - 2 * inset);
+          else g.rectPath(p[0], p[1], sq, sq);
+        }
+        g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(T.anchor)));
+        // A lighter inner border on the outer squares; the centre is a light frame instead.
+        g.newPath();
+        for (k in at) if (U.has(at, k) && k !== "c") g.rectPath(at[k][0] + 1.5, at[k][1] + 1.5, sq - 3, sq - 3);
+        g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
+        // The point used last.
+        p = at[w.values.point];
+        if (p) {
+          g.newPath();
+          g.rectPath(p[0] + 1, p[1] + 1, sq - 2, sq - 2);
+          g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(w.style.fg), 2));
+        }
+      };
       for (var i = 0; i < 9; i++) {
         (function (k, x, y) {
+          at[k] = [x, y];
           w.squares[k] = w.part(k, [x, y, sq, sq], {
             tip: "Anchor to the " + LABEL[k] + ": moves the anchor point of the selected layers or shape groups there without moving them. Shift-click: options (Include masks)",
             click: function () {
               w.save({ point: k });
               w.run({ point: k });
-            },
-            draw: function (g, p) {
-              var fill = w.hover(p) ? U.mixHex(T.anchor, "#FFFFFF", 0.2) : T.anchor, used = w.values.point === k;
-              g.newPath();
-              g.rectPath(0, 0, sq, sq);
-              g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(k === "c" ? T.anchorEdge : fill)));
-              // The centre is a frame: a light border around the square.
-              var inset = k === "c" ? Math.max(3, Math.round(sq * 0.16)) : 1.5;
-              g.newPath();
-              if (k === "c") {
-                g.rectPath(inset, inset, sq - 2 * inset, sq - 2 * inset);
-                g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, U.rgba(fill)));
-              } else {
-                g.rectPath(inset, inset, sq - 2 * inset, sq - 2 * inset);
-                g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.anchorEdge), 1.5));
-              }
-              if (used) {
-                g.newPath();
-                g.rectPath(1, 1, sq - 2, sq - 2);
-                g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(w.style.fg), 2));
-              }
             }
           });
         })(KEYS[i], x0 + (i % 3) * (sq + gap), y0 + Math.floor(i / 3) * (sq + gap));

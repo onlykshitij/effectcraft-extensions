@@ -5,11 +5,13 @@
 EffectCraft installs a ScriptUI panel by copying one file, so every panel is one self-contained
 bundle: src/core/*.js, src/tools/<category>/*.js (widgets in src/tools/widgets/) and
 src/extras/*.js (each sorted), then src/main.js, wrapped in one function. The bundles differ
-only in their `var MK_PANEL = ...;` line.
+only in their `var MK_PANEL = ...;` line. `Motion Kit.jsx` is the one to install; the single
+panels in dist/extra/ are optional, for docking several at once.
 
     python3 build.py               write dist/
     python3 build.py --out DIR     write DIR/ instead (parallel builds use private folders)
-    python3 build.py --check       exit 1 if the files in the output folder are out of date
+    python3 build.py --check       exit 1 if the output folder is out of date or has bundles the
+                                   build doesn't write
 """
 
 import argparse
@@ -20,14 +22,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 SRC = ROOT / "src"
 
-# Output file name -> the value of MK_PANEL in it.
+# Output file (relative to the output folder) -> the value of MK_PANEL in it.
 BUNDLES = [
-    ("Motion Kit 1.jsx", "1"),
-    ("Motion Kit 2.jsx", "2"),
-    ("Motion Kit 3.jsx", "3"),
-    ("Motion Kit 4.jsx", "4"),
     ("Motion Kit.jsx", '"all"'),
-    ("Motion Kit Menu.jsx", '"menu"'),
+    ("extra/Motion Kit 1.jsx", "1"),
+    ("extra/Motion Kit 2.jsx", "2"),
+    ("extra/Motion Kit 3.jsx", "3"),
+    ("extra/Motion Kit 4.jsx", "4"),
+    ("extra/Motion Kit Menu.jsx", '"menu"'),
     ("motionkit-lib.jsx", "null"),
 ]
 
@@ -131,13 +133,16 @@ def main():
         return 1
     if args.check:
         stale = [n for n, t in files.items() if not (out / n).is_file() or (out / n).read_text(encoding="utf-8") != t]
-        if stale:
-            print(f"{out} is out of date: " + ", ".join(stale) + " (run python3 build.py)", file=sys.stderr)
+        # Bundles the build no longer writes (a single panel left outside extra/, say).
+        stray = sorted(p.relative_to(out).as_posix() for p in out.rglob("*.jsx") if p.relative_to(out).as_posix() not in files)
+        if stale or stray:
+            what = ([", ".join(stale) + " out of date"] if stale else []) + ([", ".join(stray) + " not built any more"] if stray else [])
+            print(f"{out}: " + "; ".join(what) + " (run python3 build.py, delete files it doesn't build)", file=sys.stderr)
             return 1
         print(f"{out} is up to date ({len(files)} files)")
         return 0
-    out.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
+        (out / name).parent.mkdir(parents=True, exist_ok=True)
         (out / name).write_text(text, encoding="utf-8", newline="\n")
     print(f"wrote {len(files)} files to {out}")
     return 0

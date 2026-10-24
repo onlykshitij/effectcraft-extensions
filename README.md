@@ -9,7 +9,7 @@ This is an independent project. It is not made by or affiliated with the EffectC
 | Name | Kind | What it does |
 |---|---|---|
 | [TextBox](scriptui-panels/TextBox/) | ScriptUI panel | Puts a rounded rectangle behind each selected text layer. The box follows the text as it changes. |
-| [Motion Kit](scriptui-panels/MotionKit/) | ScriptUI panels | 24 motion design tools (animation, rigging, shapes, comps) and 5 inline widgets (ease, key copy/paste, interpolation, anchor, sequencer) in one combined panel, four category panels and a menu panel, all rearrangeable and restylable. |
+| [Motion Kit](scriptui-panels/MotionKit/) | ScriptUI panels | 24 motion design tools (animation, rigging, shapes, comps) and 5 inline widgets (ease, key copy/paste, interpolation, anchor, sequencer) in one dockable panel that switches between a combined view, four category views and a menu; rearrangeable and restylable. |
 
 ## Installing
 

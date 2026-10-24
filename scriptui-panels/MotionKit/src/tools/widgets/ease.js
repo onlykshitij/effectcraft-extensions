@@ -40,52 +40,57 @@
       return MK.callTool("easeKeys", ctx, { inInfluence: o.easeIn, outInfluence: o.easeOut, inSpeed: o.speed / 100, outSpeed: o.speed / 100 });
     },
     build: function (w) {
-      var pad = Math.round(w.h * 0.07), rowH = (w.h - 2 * pad) / 3, iconW = 20, defaults = MK.options.defaults(w.tool);
-      var trackX = pad + iconW, trackW = w.w - trackX - pad + INSET / 2;
-      // The value being dragged: {key, value}.
-      var live = null;
+      // One part per slider: its icon (click: reset), then the track (drag: set).
+      var pad = Math.round(w.h * 0.07), rowH = (w.h - 2 * pad) / 3, IZ = 22, defaults = MK.options.defaults(w.tool);
+      var partW = w.w - 2 * pad + 4 + INSET / 2, trackW = partW - IZ;
+      // The value being dragged: {key, value}; or the icon pressed.
+      var live = null, onIcon = false;
       w.onShift = function () { w.options("easeKeys"); };
       w.sliders = {};
       for (var i = 0; i < SLIDERS.length; i++) {
         (function (s, cy) {
           var th = Math.round(rowH) - 2, ty = Math.round(cy - th / 2);
-          function value(x, pw) { return snap(s, s.lo + (s.hi - s.lo) * (x - INSET) / Math.max(1, pw - 2 * INSET)); }
+          function value(x) { return snap(s, s.lo + (s.hi - s.lo) * (x - IZ - INSET) / Math.max(1, trackW - 2 * INSET)); }
           function current() { return live && live.key === s.key ? live.value : w.values[s.key]; }
-          var icon = w.part(s.key + "Reset", [pad - 2, Math.round(cy - 10), iconW, 20], {
-            tip: s.tip.replace(/ \(.*$/, "") + ". Click to reset it to " + defaults[s.key] + " %.",
-            click: function () {
-              var p = {};
-              p[s.key] = defaults[s.key];
-              w.save(p);
+          var part = w.part(s.key, [pad - 2, ty, partW, th], {
+            tip: s.tip + ". Drag, then release to apply all three to the selected keyframes. Click its icon to reset it to " + defaults[s.key] + " %. Shift-click: the curve editor.",
+            press: function (x) {
+              onIcon = x < IZ;
+              live = onIcon ? null : { key: s.key, value: value(x) };
             },
-            draw: function (g, b) { MK.icons.draw(g, s.icon, 1, 1, 18, w.hover(b) ? w.style.fg : T.label, w.style.accent); }
-          });
-          var track = w.part(s.key, [trackX, ty, trackW, th], {
-            tip: s.tip + ". Drag, then release to apply all three to the selected keyframes. Shift-click: the curve editor.",
-            press: function (x) { live = { key: s.key, value: value(x, trackW) }; },
-            drag: function (x) { if (live && live.key === s.key) live.value = value(x, trackW); },
+            drag: function (x) { if (live && live.key === s.key) live.value = value(x); },
+            // false: nothing was dragged, so the release is a click.
             release: function () {
-              if (!live || live.key !== s.key) return;
+              if (!live || live.key !== s.key) return false;
               var p = {};
               p[s.key] = live.value;
               live = null;
               w.save(p);
               w.run();
             },
-            draw: function (g, b) {
-              var ly = Math.round(th * 0.62), v = current(), x = INSET + (trackW - 2 * INSET) * (v - s.lo) / (s.hi - s.lo);
+            click: function () {
+              if (!onIcon) return;
+              var p = {};
+              p[s.key] = defaults[s.key];
+              w.save(p);
+            },
+            draw: function (g) {
+              var ly = Math.round(th * 0.62), v = current(), x = IZ + INSET + (trackW - 2 * INSET) * (v - s.lo) / (s.hi - s.lo);
+              MK.icons.draw(g, s.icon, 0, Math.round((th - 18) / 2), 18, T.label, w.style.accent);
               g.newPath();
-              g.moveTo(INSET, ly);
-              g.lineTo(trackW - INSET, ly);
+              g.moveTo(IZ + INSET, ly);
+              g.lineTo(partW - INSET, ly);
               g.strokePath(g.newPen(g.PenType.SOLID_COLOR, U.rgba(T.label, 0.55), 2));
-              MK.ui.gfx.circle(g, x, ly, w.hover(b) || live ? 7 : 6, w.style.fg);
-              if (live && live.key === s.key) {
+              var dragged = live && live.key === s.key;
+              MK.ui.gfx.circle(g, Math.round(x * 10) / 10, ly, dragged ? 7 : 6, w.style.fg);
+              if (dragged) {
                 var t = String(v) + " %", tw = MK.ui.gfx.textW(g, t, 10);
-                MK.ui.gfx.text(g, t, Math.round(U.clamp(x - tw / 2, 0, trackW - tw)), Math.max(0, ly - 21), 10, T.label);
+                MK.ui.gfx.text(g, t, Math.round(U.clamp(x - tw / 2, IZ, partW - tw)), Math.max(0, ly - 21), 10, T.label);
               }
             }
           });
-          w.sliders[s.key] = { icon: icon, track: track, value: current };
+          // The track runs from x0 for w px in the part (for tests and callers).
+          w.sliders[s.key] = { part: part, track: part, x0: IZ, w: trackW, value: current };
         })(SLIDERS[i], pad + rowH * (i + 0.5));
       }
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // UI smoke test: the six dist panels build, every default item has a cell, buttons draw icon
-// only, mouse input (click, Shift-click, right-click, hover, drag reorder in edit mode, a drop
+// only, mouse input (click, Shift-click, right-click, drag reorder in edit mode, a drop
 // outside the grid) through EffectCraft's ScriptUI event routing, rev polling, the command box,
 // the options dialog, the Layout & Style dialog (all tabs) and the icon renderer.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
@@ -14,7 +14,7 @@ function cellIds(P) { return U.map(P.cells, function (c) { return c.mkId; }).joi
 // ---- the dist panels build, each with a button per default tool
 var wins = [];
 for (var n = 1; n <= 5; n++) {
-  var file = n === 5 ? "Motion Kit.jsx" : "Motion Kit " + n + ".jsx";
+  var file = n === 5 ? "Motion Kit.jsx" : "extra/Motion Kit " + n + ".jsx";
   var w = $.evalFile(MKT_DIR + "/dist/" + file);
   T.check(w instanceof Window && w.mkPanel && w.mkPanel.index === n - 1, file + " opens a palette for panel " + n + " (" + w.text + ")");
   wins.push(w);
@@ -28,26 +28,41 @@ var P1 = wins[0].mkPanel, P2 = wins[1].mkPanel;
 T.check(P1.title.text === "Animate" && P1.layoutList && P1.pencil && P1.gear && P1.commandBox, "panel 1 header: title, layout list, ✎, ⚙, command box");
 T.check(!P2.commandBox, "panel 2 has no command box by default");
 
-// Every button draws its background and icon and no name: the name is in the help tip (onDraw
-// runs when the host takes a snapshot).
+// Every button draws its icon and no name: the name is in the help tip. The grid draws every
+// cell's frame under the cells, in one operation (onDraw runs when the host takes a snapshot).
 __uiSnapshot();
-var drawn = true, texts = false, iconButtons = true;
+// The grid's border operation: true when it has one outline starting inside each cell.
+function framed(P) {
+  var ops = P.grid.__draw || [], R = P.geo.rects;
+  for (var i = 0; i < ops.length; i++) {
+    if (ops[i].op !== "stroke" || ops[i].width !== 1) continue;
+    var starts = U.filter(ops[i].path, function (seg) { return seg.k === "M"; }), hit = 0;
+    for (var c = 0; c < P.cells.length; c++) {
+      var r = R[c];
+      for (var m = 0; m < starts.length; m++) if (starts[m].x >= r[0] && starts[m].x <= r[0] + r[2] && starts[m].y >= r[1] && starts[m].y <= r[1] + r[3]) { hit++; break; }
+    }
+    return starts.length === P.cells.length && hit === P.cells.length;
+  }
+  return false;
+}
+var drawn = true, texts = false, iconButtons = true, frames = true;
 for (var q = 0; q < 4; q++) {
   var cells = wins[q].mkPanel.cells;
+  if (!framed(wins[q].mkPanel)) frames = false;
   for (var c = 0; c < cells.length; c++) {
     var ops = cells[c].__draw || [];
-    if (ops.length < 3) drawn = false;
+    if (!ops.length) drawn = false;
     if (cells[c].type !== "iconbutton") iconButtons = false;
     for (var o = 0; o < ops.length; o++) if (ops[o].op === "text" && ops[o].text) texts = true;
   }
 }
-T.check(drawn && !texts, "every button draws a background and an icon, without a name");
+T.check(drawn && !texts && frames, "every button draws an icon, without a name, inside the frame the grid draws for it");
 T.check(iconButtons, "every tool button is a custom-drawn iconbutton (so EffectCraft shows its help tip)");
 var look = MotionKit.ui.look({ id: "futureTool" }, def.panels[0].style);
 T.check(look.missing && look.fg === "#8A8A8A" && look.icon === MotionKit.helpers.icons.builtin.missing, "a tool that isn't installed draws as the grey \"?\" button");
 T.check(/not available/i.test(MotionKit.describe("futureTool").description) && /Shift-click/.test(P1.cells[0].helpTip), "help tips: description, options hint, missing explanation");
 
-var menu = $.evalFile(MKT_DIR + "/dist/Motion Kit Menu.jsx");
+var menu = $.evalFile(MKT_DIR + "/dist/extra/Motion Kit Menu.jsx");
 var M = menu.mkPanel;
 // The registered tools of a category, in registration order.
 function catIds(cat) { return U.map(U.filter(MotionKit.catalog(), function (x) { return x.category === cat; }), function (x) { return x.id; }).join(","); }
@@ -69,10 +84,7 @@ function rowsFit(P) {
   for (var r = 0; r < P.cells.length; r++) if (P.cells[r].mkGX + P.sz.w > P.cols * (P.sz.w + P.sp)) return false;
   return P.cells.length === P.items().length;
 }
-T.mouse(W1, P1.cells[1], "mousemove", 5, 5);
-T.check(P1.hover === 1, "hover tracks the button under the pointer");
-T.mouse(W1, P1.cells[1], "mouseout", 5, 5);
-T.check(P1.hover === -1, "mouseout clears the hover");
+T.check(!/mousemove|mouseover|mouseout/.test(JSON.stringify(__uiJson(W1))), "at rest the panel listens to no pointer movement (no hover state)");
 
 // Out of edit mode a drag doesn't reorder (a slider drag must never move a cell).
 var unedited = order(0);
@@ -90,9 +102,12 @@ T.check(P1.drag && P1.drag.moved && P1.drag.slot === 1, "moving more than 4 px s
 T.mouse(W1, P1.cells[2], "mousemove", cw - 3, 10);
 T.check(P1.drag.slot === 3, "the drop slot follows the pointer (slot 3)");
 __uiSnapshot();
-var ind = false, ops3 = P1.cells[3].__draw;
-for (var k = 0; k < ops3.length; k++) if (ops3[k].op === "fill" && ops3[k].path[0] && ops3[k].path[0].k === "R" && ops3[k].path[0].w === 2) ind = true;
-T.check(ind, "a drop indicator line is drawn at the slot");
+var ind = false, gops = P1.grid.__draw;
+for (var k = 0; k < gops.length; k++) {
+  var seg = gops[k].path && gops[k].path[0];
+  if (gops[k].op === "fill" && seg && seg.k === "R" && seg.w === 2 && seg.x === P1.cells[3].mkGX && seg.y === P1.cells[3].mkGY) ind = true;
+}
+T.check(ind, "a drop indicator line is drawn at the slot (the left edge of cell 3)");
 T.mouse(W1, P1.cells[2], "mouseup", cw - 3, 10);
 T.check(order(0).indexOf("elastic,loop,bounce,easeKeys") === 0, "the drop saves the new order: " + order(0));
 T.check(cellIds(P1).indexOf("elastic,loop,bounce,") === 0, "and the panel shows it");
@@ -348,7 +363,8 @@ T.check(P1.rev === MotionKit.settings.rev(), "open panels pick it up on their ne
 // ---- icons: every icon parses, stays in its square, and the geometry helpers flatten curves
 var G = MotionKit.helpers.icons.geom;
 var q = G.quad([0, 0], [5, 10], [10, 0]);
-T.check(q.length === 10 && T.near(q[9], [10, 0]) && T.near(q[4], [5, 5]), "quadratic flattened to 10 segments through the curve's midpoint");
+var q2 = G.quad([0, 0], [5, 10], [10, 0], 6);
+T.check(q.length === 5 && T.near(q[4], [10, 0]) && q2.length === 6 && T.near(q2[2], [5, 5]), "quadratic flattened to 5 segments by default, any count on request, through the curve's midpoint");
 var cu = G.cubic([0, 0], [0, 10], [10, 10], [10, 0], 8);
 T.check(cu.length === 8 && T.near(cu[7], [10, 0]) && T.near(cu[3], [5, 7.5]), "cubic flattened (8 segments here)");
 var arc = G.arc(0, 0, 10, 10, 0, 90);
