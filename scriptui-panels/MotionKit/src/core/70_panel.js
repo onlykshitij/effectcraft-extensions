@@ -91,6 +91,8 @@ MK.ui.removableNames = function () {
   var n = MK.util.map(MK.util.filter(MK.toolOrder, function (id) { return MK.tools[id].removable; }), function (id) { return MK.tools[id].name; });
   return n.length > 1 ? n.slice(0, -1).join(", ") + " and " + n[n.length - 1] : n.join("");
 };
+// What Alt-click says on a tool or widget `name` that can't remove anything.
+MK.ui.altText = function (name) { return name + ": Alt-click removes what a tool added, and only " + MK.ui.removableNames() + " can do that."; };
 MK.ui.openLayoutDialog = function (panelIndex, tab) { return MK.layoutDialog.open(panelIndex, tab); };
 MK.ui.openAddList = function (panelIndex) {
   var D = MK.ui.buildAddList(panelIndex);
@@ -718,10 +720,11 @@ MK.ui.buildPanel = function (host, index, views) {
 
   // The insertion slot (0..n) for a drop at a grid point, or -1 off the grid: before the item
   // under the pointer when it is in that item's left half, else after it. Over a hole, the
-  // nearest item decides.
+  // nearest item decides; over the "+" cell, the end.
   function slotAt(xy) {
-    var n = P.items().length, R = P.geo.rects, sp = P.sp;
+    var n = P.items().length, R = P.geo.rects, sp = P.sp, a = P.addCell ? R[n] : null;
     if (!n || xy[0] < -sp || xy[1] < -sp || xy[0] > P.geo.w + sp || xy[1] > P.geo.h + sp) return -1;
+    if (a && xy[0] >= a[0] && xy[0] < a[0] + a[2] && xy[1] >= a[1] && xy[1] < a[1] + a[3]) return n;
     var best = 0, bd = Infinity;
     for (var i = 0; i < n; i++) {
       var r = R[i], dx = Math.max(r[0] - xy[0], 0, xy[0] - r[0] - r[2]), dy = Math.max(r[1] - xy[1], 0, xy[1] - r[1] - r[3]);
@@ -777,7 +780,8 @@ MK.ui.buildPanel = function (host, index, views) {
       P.drag = null;
       return;
     }
-    if (t.mkRole === "part") {
+    // Alt-click on a widget part goes to the widget below, which explains as tools do.
+    if (t.mkRole === "part" && !e.altKey) {
       P.drag = { part: t, shift: opt };
       if (!opt && t.mkPress) t.mkPress(xy[0] - t.mkGX, xy[1] - t.mkGY);
       hold(!opt && !!t.mkDrag);
@@ -840,7 +844,9 @@ MK.ui.buildPanel = function (host, index, views) {
     }
     if (!xy || cellAt(xy) !== d.from) return;
     if (isWidget(d.from)) {
-      if (options && P.widgets[d.from].onShift) P.widgets[d.from].onShift();
+      var wd = P.widgets[d.from];
+      if (d.remove || e.altKey) MK.prompts.alert(MK.ui.altText(wd.tool.name));
+      else if (options && wd.onShift) wd.onShift();
       return;
     }
     P.activate(d.from, options, d.remove || !!e.altKey);
@@ -853,7 +859,7 @@ MK.ui.buildPanel = function (host, index, views) {
     var d = MK.describe(item.id, P.state.library), r = null, tool = MK.tools[item.id];
     if (d.missing) MK.prompts.alert("\"" + item.id + "\": " + d.description);
     else if (remove && tool && tool.removable) r = MK.remove(item.id);
-    else if (remove) MK.prompts.alert(d.name + ": Alt-click removes what a tool added, and only " + MK.ui.removableNames() + " can do that.");
+    else if (remove) MK.prompts.alert(MK.ui.altText(d.name));
     else if (options && tool) r = MK.ui.openOptions(item.id);
     else r = MK.run(item.id);
     P.refresh();

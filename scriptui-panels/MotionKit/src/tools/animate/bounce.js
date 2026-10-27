@@ -95,7 +95,10 @@
     ],
     run: function (ctx, o) {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return MK.sel.isNumeric(p) && p.canSetExpression; });
-      if (!props.length) ctx.fail("select one or more properties with at least two keyframes (numbers, points or colours).");
+      // Cameras and lights can't hold effects, so they can't hold the controls.
+      var noFx = MK.util.filter(props, function (p) { return !C.fx(MK.sel.layerOf(p)); }).length;
+      props = MK.util.filter(props, function (p) { return !!C.fx(MK.sel.layerOf(p)); });
+      if (!props.length) ctx.fail(noFx ? "cameras and lights can't hold " + NAME + "'s controls: select properties of other layers." : "select one or more properties with at least two keyframes (numbers, points or colours).");
       var d = MK.expr.decide(ctx, props);
       for (var i = 0; i < d.apply.length; i++) {
         var layer = MK.sel.layerOf(d.apply[i]);
@@ -108,7 +111,8 @@
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "bounce", BODY);
       }
-      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value"));
+      if (noFx) ctx.warn("Skipped " + noFx + " on cameras or lights, which can't hold controls.");
+      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length - noFx, d.skip.length, "two keyframes and a numeric value", 0, 0, ctx));
     }
   });
 })();

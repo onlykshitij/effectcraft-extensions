@@ -96,8 +96,11 @@
     }
 
     var miss = lost(pl), plName = pl.name;
-    if (o.original === "delete") pl.remove();
-    else pl.enabled = false;
+    if (o.original === "delete") {
+      // Layers parented to the precomp layer follow the null instead: same layer space, no jump.
+      for (i = 1; i <= comp.numLayers; i++) if (comp.layer(i).parent && comp.layer(i).parent.id === pl.id) comp.layer(i).setParentWithJump(nul);
+      pl.remove();
+    } else pl.enabled = false;
     ctx.created.push(nul);
     for (i = 0; i < copied.length; i++) ctx.created.push(copied[i]);
     if (miss.length) ctx.warn("Not carried over from \"" + plName + "\": " + miss.join(", ") + ".");

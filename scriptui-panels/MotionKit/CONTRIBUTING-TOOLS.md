@@ -59,7 +59,7 @@ The runner, `MotionKit.run(id, options)`:
 | `time`, `frame` | `comp.time` and `comp.frameDuration` |
 | `created` | push the layers or items you make; they are returned in `created` |
 | `fail(msg)` | stop with a user message. The runner prefixes "<Tool>: ", so start with a lower-case verb |
-| `warn(msg)` | a note appended to the result message |
+| `warn(msg)` | a note appended to the result message; the panel shows the message even when the run worked, so use it for whatever was skipped |
 | `confirm(msg)` | ask yes/no (tests answer through `MotionKit.prompts`) |
 | `done(msg)` | the success result |
 
@@ -69,6 +69,7 @@ Optional fields of the definition:
 - `dot: function () { return bool; }` shows an accent dot on the button while true, for example while a clipboard holds something.
 - `openOptions: function () {...}` replaces the generated options dialog, for a dialog of your own such as a curve editor. Return a run result or null.
 - `api: {...}` holds functions other tools and widgets reuse, as `MK.tools[id].api` (Ease Copy's `paste`, for example).
+- `removable: true` makes Alt-click take the tool's work off the selection (`MK.remove(id)`): its marked expressions, then its "<Tool> – …" controls on layers where none of them is left. Use it when the tool's whole result is that.
 
 To reuse another tool inside your `run`, call `MK.callTool(id, ctx, options)`. It runs that tool's `run` with the same `ctx`, so everything stays one undo step, with the tool's saved options and `options` on top.
 
@@ -145,7 +146,7 @@ All of these are on `MK` inside the bundle and on `MotionKit.helpers` outside it
 ### Expression controls: `MK.controls`
 
 - `name("Bounce", "Amplitude")` gives `"Bounce – Amplitude"` (with an en dash), the house naming.
-- `ensure(layer, matchName, name, value)` returns the control with that name, creating it with `value` only when the layer has none. One control set then drives every property a tool touched on that layer. The shortcuts are `slider`, `checkbox`, `color` (hex or `[r, g, b]`), `point`, `point3d`, `angle`, `layer` (a Layer) and `dropdown` (a 1-based index; EffectCraft's scripting can't name the menu items).
+- `ensure(layer, matchName, name, value)` returns the control with that name, creating it with `value` only when the layer has none. One control set then drives every property a tool touched on that layer. During a run from the options dialog's OK (`MK.run(id, null, false, {setControls: true})`), an existing control also takes `value`, since the user just chose it. The shortcuts are `slider`, `checkbox`, `color` (hex or `[r, g, b]`), `point`, `point3d`, `angle`, `layer` (a Layer) and `dropdown` (a 1-based index; EffectCraft's scripting can't name the menu items).
 - `find(layer, name, matchName?)`, `set(effect, value)` and `prop(effect)` (the value property).
 - `ref(name, matchName?)` is the expression text that reads a control, such as `effect("Bounce – Amplitude")("Slider")`. Add `.value` when you do maths with it.
 
@@ -159,7 +160,8 @@ Every expression a tool writes starts with the line `// Motion Kit: <id>`. Use `
 - `set(prop, id, body)` writes `// Motion Kit: id` and the body. `make(id, body)` returns that text.
 - `applyAll(ctx, props, id, body)` runs `decide` and `set` together. `body` can be `function (prop)`.
 - `isOurs(prop, id?)` and `hasForeign(prop)` read the mark. `str(s)` quotes a string for expression code.
-- `report(name, applied, invalid, kept, needs)` gives the standard result message.
+- `report(name, applied, invalid, kept, needs, resting?, linear?, ctx?)` gives the standard result message. With `ctx`, the skipped, kept and stopped notes go through `ctx.warn`.
+- `ofTool(group, id)` lists the properties under a layer or group whose expression tool `id` wrote.
 
 ### Layer and comp space: `MK.space`
 
@@ -169,6 +171,7 @@ These conversions run EffectCraft's own `toComp` / `fromComp` / `toWorld` / `fro
 - `toCompPoints(layer, points, t?)` converts many points with one affine matrix when `is2D(layer)` (the layer and all its parents are 2D), else point by point.
 - `matrix(layer, t?)` is the 2D affine layer-to-comp matrix `[a, b, c, d, e, f]`.
 - `rectCorners(layer, t?, extents?)` gives the four `sourceRectAtTime` corners in layer space (top-left, top-right, bottom-right, bottom-left). `rectCornersInComp` gives the same corners in comp space.
+- `anchor(layer, t?)` is the anchor point, `[0, 0, 0]` for cameras and lights (they have none). `is3D(layer)` counts cameras and lights as 3D; `isCameraOrLight(layer)`.
 - `anchorInComp(layer, t?)` is where the layer is. `compToParent(layer, p, t?)` turns a comp point into the space the layer's Position is in, so setting Position to it puts the anchor there.
 - `bounds(points)` gives `{left, top, right, bottom, width, height, center}`.
 - `probe(layer, function (evaluate) {...})` runs your own expressions on the layer: `evaluate(code, t)` returns up to three numbers, and `L` is the layer inside `code`.
@@ -181,6 +184,7 @@ These conversions run EffectCraft's own `toComp` / `fromComp` / `toWorld` / `fro
 - `setEase(prop, i, inEase, outEase)` fits eases to the property's dimensions, reusing the first entry when the counts differ. `fit(list, dims)` returns the `KeyframeEase` list.
 - `setInterp(prop, i, inType, outType)` sets only the interpolation types (false when the property can't take them). EffectCraft keeps a key's ease while it is Linear or Hold, so switching back to Bezier this way brings the ease back.
 - `remove(prop, indices)` removes keys by index, in any order.
+- `atRest(prop, i, arriving)` is true when key i arrives (or leaves) with no speed: Hold, Easy Ease, a holding segment or an unchanged value. `easedStop(prop, i, arriving)` is just the Easy Ease case, and `offerLinearArrival(props, name)` asks to make such last keys arrive Linear, for tools that carry the arriving speed on (Elastic).
 
 ### Shapes: `MK.shapes`
 

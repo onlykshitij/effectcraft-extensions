@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Helpers for the Rig tools: the path properties in the selection (shape paths and mask paths),
 // expression text that reads a path or shape group, the shape-group matrix inside expressions,
-// sampled path outlines for bounds, and label colours.
+// Layer Controls that name layers, sampled path outlines and exact shape bounds, and label colours.
 
 MK.rig = (function () {
   var U = MK.util, SH = MK.shapes;
@@ -41,9 +41,12 @@ MK.rig = (function () {
   };
 
   // Expression text reaching a shape item, shape path, mask or mask path from any layer:
-  // thisComp.layer("Shape").content("Group 1").content("Path 1").path. With `self` it starts
-  // from thisLayer (for an expression on that same layer).
-  R.ref = function (p, self) {
+  // thisComp.layer("Shape").content("Group 1").content("Path 1").path. `from` true starts from
+  // thisLayer (for an expression on that same layer); a string starts from that expression
+  // variable, such as one holding a Layer Control's layer, which survives renaming the layer.
+  // Shape groups, paths and masks are still found by name: EffectCraft 0.14 doesn't rewrite
+  // expressions on a rename, so renaming one of them breaks the reference.
+  R.ref = function (p, from) {
     var s = "";
     for (var q = p, n = 0; q && !(q instanceof Layer) && n < 200; q = q.parentProperty, n++) {
       var m = q.matchName;
@@ -52,7 +55,7 @@ MK.rig = (function () {
       else if (m === "ADBE Mask Atom") s = ".mask(" + MK.expr.str(q.name) + ")" + s;
       else if (q.parentProperty && (q.parentProperty.matchName === "ADBE Vectors Group" || q.parentProperty.matchName === "ADBE Root Vectors Group")) s = ".content(" + MK.expr.str(q.name) + ")" + s;
     }
-    return (self ? "thisLayer" : "thisComp.layer(" + MK.expr.str(MK.sel.layerOf(p).name) + ")") + s;
+    return (from === true ? "thisLayer" : typeof from === "string" ? from : "thisComp.layer(" + MK.expr.str(MK.sel.layerOf(p).name) + ")") + s;
   };
 
   // Expression functions on 2D affine matrices [a, b, c, d, e, f] (x' = a x + b y + c,
@@ -89,10 +92,23 @@ MK.rig = (function () {
 
   // Expression code that sets mkX to the matrix from a path's own space to its layer's space,
   // through its enclosing shape groups at the current time (identity for masks). Needs R.LIB.
-  R.matrixCode = function (groups, self) {
+  // `from` as for R.ref.
+  R.matrixCode = function (groups, from) {
     var s = "var mkX = [1, 0, 0, 0, 1, 0];\n";
-    for (var i = 0; i < groups.length; i++) s += "mkX = mkMul(mkX, mkGroupM(" + R.ref(groups[i], self) + "));\n";
+    for (var i = 0; i < groups.length; i++) s += "mkX = mkMul(mkX, mkGroupM(" + R.ref(groups[i], from) + "));\n";
     return s;
+  };
+
+  // Expression text reading a Layer Control's layer (null when it names none) on the
+  // expression's own layer.
+  R.layerOf = function (controlName) {
+    return MK.controls.ref(controlName, "ADBE Layer Control") + ".value";
+  };
+  // A Layer Control called `name` on `layer` that names `target`, also when it already exists.
+  R.layerControl = function (layer, name, target) {
+    var e = MK.controls.layer(layer, name, target);
+    MK.controls.set(e, target);
+    return e;
   };
 
   // Points along a Shape value (its vertices and `steps` points per Bézier segment), through the
@@ -114,20 +130,57 @@ MK.rig = (function () {
     return U.map(pts, function (p) { return MK.mat.apply(mat, p); });
   };
 
+  // The bounds of the shapes under `root` (a shape layer or a shape group) in its own space at
+  // comp time t: paths, rectangles, ellipses and stars (their outer points), through nested
+  // groups, without strokes; hidden items left out. Null when there are none.
+  R.contentBounds = function (root, t) {
+    var pts = [];
+    SH.walk(root, function (it, groups) {
+      if (it.enabled === false) return false;
+      var m = SH.toLayerMatrix(groups, t), mn = it.matchName, i;
+      var v = function (name) { return it.property(name).valueAtTime(t, false); };
+      if (mn === SH.PATH_ITEM) pts = pts.concat(R.outline(v(R.SHAPE_PATH), m));
+      else if (mn === "ADBE Vector Shape - Rect" || mn === "ADBE Vector Shape - Ellipse") {
+        var rect = mn === "ADBE Vector Shape - Rect";
+        var c = v(rect ? "ADBE Vector Rect Position" : "ADBE Vector Ellipse Position"), s = v(rect ? "ADBE Vector Rect Size" : "ADBE Vector Ellipse Size");
+        var n = rect ? 4 : 64;
+        for (i = 0; i < n; i++) {
+          var u = rect ? [[-1, -1], [1, -1], [1, 1], [-1, 1]][i] : [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)];
+          pts.push(MK.mat.apply(m, [c[0] + u[0] * s[0] / 2, c[1] + u[1] * s[1] / 2]));
+        }
+      } else if (mn === "ADBE Vector Shape - Star") {
+        var sc = v("ADBE Vector Star Position"), k = Math.max(3, Math.round(v("ADBE Vector Star Points"))), rad = v("ADBE Vector Star Outer Radius"), rot = v("ADBE Vector Star Rotation");
+        for (i = 0; i < k; i++) {
+          var ang = (rot + 360 * i / k - 90) * Math.PI / 180;
+          pts.push(MK.mat.apply(m, [sc[0] + rad * Math.cos(ang), sc[1] + rad * Math.sin(ang)]));
+        }
+      }
+    });
+    return MK.space.bounds(pts);
+  };
+
+  // A layer's bounds in layer space at comp time t ({left, top, width, height...}). For shape
+  // layers, the exact outline of the contents: EffectCraft 0.14's sourceRectAtTime(t, false) adds
+  // 1 px on each side, rounds the width up and counts strokes. Other layers use sourceRectAtTime.
+  // shortcut: shape layers with a path operator (Repeater, Offset Paths, Trim...) keep
+  // sourceRectAtTime, since the outline ignores operators; walk them here if that matters.
+  R.layerBounds = function (layer, t) {
+    var root = SH.contents(layer), ops = false;
+    if (root) SH.walk(layer, function (it) { if (it.matchName.indexOf("ADBE Vector Filter") === 0) ops = true; });
+    var b = root && !ops ? R.contentBounds(layer, t) : null;
+    return b || MK.space.bounds(MK.space.rectCorners(layer, t, false));
+  };
+  // The four corners of bounds b, [x, y, 0]: top-left, top-right, bottom-right, bottom-left.
+  R.corners = function (b) {
+    return [[b.left, b.top, 0], [b.right, b.top, 0], [b.right, b.bottom, 0], [b.left, b.bottom, 0]];
+  };
+
   // A label colour (1-16) no layer of the comp uses yet, or the next one in turn when all are taken.
   R.freeLabel = function (comp) {
     var used = {};
     for (var i = 1; i <= comp.numLayers; i++) used[comp.layer(i).label] = true;
     for (var l = 1; l <= 16; l++) if (!used[l]) return l;
     return 1 + comp.numLayers % 16;
-  };
-
-  // True when another layer of the comp has this layer's name, so thisComp.layer(name) in an
-  // expression could find the wrong one.
-  R.nameClash = function (layer) {
-    var c = layer.containingComp;
-    for (var i = 1; i <= c.numLayers; i++) if (c.layer(i).name === layer.name && c.layer(i).index !== layer.index) return true;
-    return false;
   };
 
   // "Name", "Name 2"... a layer name the comp doesn't have yet.

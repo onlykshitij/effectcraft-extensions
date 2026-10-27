@@ -109,10 +109,14 @@
     ],
     run: function (ctx, o) {
       if (!o.shapes && !o.controls) ctx.fail("turn on at least one output in the options (Shift-click).");
-      var layers = ctx.layers;
+      // A new list for the whole comp, so ctx.layers still tells whether layers were selected.
+      var layers = ctx.layers.length ? ctx.layers : [];
       if (!layers.length) for (var i = 1; i <= ctx.comp.numLayers; i++) layers.push(ctx.comp.layer(i));
       var got = gather(layers, ctx.time);
-      if (!got.colors.length) ctx.fail("found no colours in " + (ctx.layers.length ? "the selected layers." : "the comp."));
+      if (!got.colors.length) {
+        ctx.fail("found no colours in " + (ctx.layers.length ? "the selected layers" : "the comp") +
+          (got.gradients ? ", only " + got.gradients + (got.gradients === 1 ? " gradient" : " gradients") + " (gradient stops aren't collected)." : "."));
+      }
       var colors = merge(got.colors, o.tolerance, o.step);
       colors.sort(function (a, b) { return hueKey(a) - hueKey(b); });
       if (o.shapes) paletteShapes(ctx, colors);

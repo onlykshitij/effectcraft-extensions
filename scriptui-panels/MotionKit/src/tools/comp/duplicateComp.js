@@ -4,7 +4,8 @@
 // from comp id to copy, filled before recursing, also stops cycles), and points the copies' layers
 // at the copies with AVLayer.replaceSource. Copies are named "<name> 2", "<name> 3"... or
 // "<name><suffix>". Every expression in the copies that names a duplicated comp with
-// comp("<old name>") is rewritten to the copy's name.
+// comp("<old name>") is rewritten to the copy's name. Without Deep (or Layer.replaceSource) a
+// copy still uses the original precomps, so only its own name is rewritten in it.
 
 (function () {
   var NAME = "Duplicate Comp", U = MK.util;
@@ -31,6 +32,11 @@
       var cmds = app.run("command.list", {});
       for (var i = 0; i < cmds.length; i++) if (cmds[i].id === "layer.replaceSource") return true;
     } catch (e) {}
+    return false;
+  }
+
+  function hasPrecomp(comp) {
+    for (var i = 1; i <= comp.numLayers; i++) if (comp.layer(i) instanceof AVLayer && comp.layer(i).source instanceof CompItem) return true;
     return false;
   }
 
@@ -80,7 +86,7 @@
       if (!roots.length && ctx.comp) roots = [ctx.comp];
       if (!roots.length) ctx.fail("select one or more comps in the Project panel, or open a comp.");
       var deep = o.deep && canReplaceSource();
-      if (o.deep && !deep) ctx.warn("Nested precomps weren't duplicated: this EffectCraft has no Layer.replaceSource, so the copies still use the original precomps.");
+      if (o.deep && !deep && U.filter(roots, hasPrecomp).length) ctx.warn("Nested precomps weren't duplicated: this EffectCraft has no Layer.replaceSource, so the copies still use the original precomps.");
 
       var copies = {}, list = [], i;
       function dup(c) {
@@ -107,7 +113,7 @@
       var rewritten = 0;
       for (i = 0; i < list.length; i++) {
         var d = list[i].to;
-        for (var j = 1; j <= d.numLayers; j++) rewritten += rewrite(d.layer(j), renames);
+        for (var j = 1; j <= d.numLayers; j++) rewritten += rewrite(d.layer(j), deep ? renames : [renames[i]]);
         ctx.created.push(d);
       }
       var nested = list.length - roots.length;

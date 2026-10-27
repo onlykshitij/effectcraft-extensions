@@ -10,18 +10,25 @@
 // path space -> comp -> null -> back, so rotating or scaling a null turns and scales its handles.
 // "Nulls follow points" goes the other way: each null's position reads its vertex from the
 // (possibly animated) path, through mkX and toComp, into the null's parent space.
+// Layer Controls link the layers, so renaming a null or the path's layer keeps the rig: with
+// "Points follow nulls" the path's layer gets one per null, named after the null; with "Nulls
+// follow points" each null gets one naming the path's layer. Shape groups and masks are still
+// found by name.
 
 (function () {
   var NAME = "Nulls ↔ Points", ID = "nullsPoints";
-  var U = MK.util, S = MK.space, R = MK.rig;
+  var U = MK.util, S = MK.space, R = MK.rig, C = MK.controls;
+  var LC = "ADBE Layer Control", PATH_LAYER = C.name(NAME, "Path Layer");
 
   function list(a) { return "[" + U.map(a, MK.expr.str).join(", ") + "]"; }
 
-  // The path expression for "Points follow nulls".
-  function pathExpr(pe, names, tangents) {
+  // The path expression for "Points follow nulls": `ctrls` are the names of the Layer Controls on
+  // the path's layer that name the nulls, in vertex order.
+  function pathExpr(pe, ctrls, tangents) {
     return [
       R.LIB,
-      "var mkNames = " + list(names) + ";",
+      "function mkNullOf(n) { try { return effect(n)(" + JSON.stringify(C.PARAM[LC]) + ").value; } catch (mkE) { return null; } }",
+      "var mkNames = " + list(ctrls) + ";",
       "var mkTan = " + (tangents ? "true" : "false") + ";",
       "var mkV = mkPathOf(value), mkP = mkV.points(), mkIn = mkV.inTangents(), mkOutT = mkV.outTangents();",
       "var mkPts = [], mkI = [], mkO = [], mkToItem = [1, 0, 0, 0, 1, 0], mkIC = [1, 0, 0, 0, 1, 0];",
@@ -35,7 +42,8 @@
       "  var mkQ = mkP[mkK], mkA = mkIn[mkK] || [0, 0], mkB = mkOutT[mkK] || [0, 0];",
       "  if (mkK < mkNames.length) {",
       "    try {",
-      "      var mkN = thisComp.layer(mkNames[mkK]);",
+      "      var mkN = mkNullOf(mkNames[mkK]);",
+      "      if (!mkN) throw new Error(\"no null\");",
       "      var mkC = mkApply(mkToItem, fromComp(mkN.toComp(mkN.anchorPoint.value)));",
       "      if (mkFinite(mkC)) mkQ = mkC;",
       "      if (mkTan) {",
@@ -60,8 +68,9 @@
       R.LIB,
       "var mkOut = value;",
       "try {",
-      "  var mkL = thisComp.layer(" + MK.expr.str(pe.layer.name) + ");",
-      R.matrixCode(pe.groups, false) + "  var mkP = " + R.ref(pe.prop) + ".points();",
+      "  var mkL = " + R.layerOf(PATH_LAYER) + ";",
+      "  if (!mkL) throw new Error(\"no path layer\");",
+      R.matrixCode(pe.groups, "mkL") + "  var mkP = " + R.ref(pe.prop, "mkL") + ".points();",
       "  if (mkP.length > " + k + ") {",
       "    var mkC = mkL.toComp(mkApply(mkX, mkP[" + k + "]));",
       "    if (hasParent) mkC = parent.fromComp(mkC);",
@@ -100,12 +109,13 @@
         kept = d.skip.length;
         paths = U.filter(paths, function (pe) { return U.indexOf(d.apply, pe.prop) >= 0; });
       }
-      var made = 0;
+      var made = 0, held = [];
       for (i = 0; i < paths.length; i++) {
         var pe = paths[i], shape = pe.prop.valueAtTime(t, false);
+        if (follow && animatedPath(pe) && U.indexOf(held, pe.layer.name) < 0) held.push(pe.layer.name);
         var m = pathToLayer(pe, t);
         var at = S.toCompPoints(pe.layer, U.map(shape.vertices, function (v) { return MK.mat.apply(m, v); }), t);
-        var nulls = [], names = [], num = 1;
+        var nulls = [], num = 1;
         for (k = 0; k < at.length; k++) {
           while (ctx.comp.layers.byName(pe.layer.name + " Point " + num)) num++;
           var n = ctx.comp.layers.addNull();
@@ -113,7 +123,6 @@
           n.moveBefore(pe.layer);
           n.transform.position.setValue([at[k][0], at[k][1]]);
           nulls.push(n);
-          names.push(n.name);
           ctx.created.push(n);
         }
         if (o.parent) {
@@ -125,10 +134,18 @@
           for (k = 0; k < nulls.length; k++) nulls[k].parent = pn;
           ctx.created.push(pn);
         }
-        if (follow) MK.expr.set(pe.prop, ID, pathExpr(pe, names, o.tangents));
-        else {
-          for (k = 0; k < nulls.length; k++) MK.expr.set(nulls[k].transform.position, ID, nullExpr(pe, k));
-          if (R.nameClash(pe.layer)) ctx.warn("Another layer is also named \"" + pe.layer.name + "\": rename one, or the nulls may follow the wrong path.");
+        if (follow) {
+          var ctrls = U.map(nulls, function (nl) {
+            var cn = U.uniqueName(C.name(NAME, nl.name), function (x) { return !!C.find(pe.layer, x); });
+            R.layerControl(pe.layer, cn, nl);
+            return cn;
+          });
+          MK.expr.set(pe.prop, ID, pathExpr(pe, ctrls, o.tangents));
+        } else {
+          for (k = 0; k < nulls.length; k++) {
+            R.layerControl(nulls[k], PATH_LAYER, pe.layer);
+            MK.expr.set(nulls[k].transform.position, ID, nullExpr(pe, k));
+          }
         }
         made += nulls.length;
       }
@@ -136,9 +153,33 @@
         (follow ? "; the path follows them." : "; they follow the path.");
       if (empty.length) msg += " Skipped " + empty.length + " empty " + (empty.length === 1 ? "path." : "paths.");
       if (kept) msg += " Kept " + kept + " path" + (kept === 1 ? "" : "s") + " with an existing expression.";
+      if (held.length) {
+        msg += " The nulls now place the path" + (held.length === 1 ? "" : "s") + ", so the animation of " + held.join(", ") +
+          " (transform, shape groups or path keyframes) no longer moves " + (held.length === 1 ? "it." : "them.");
+      }
       return ctx.done(msg);
     }
   });
+
+  // True when a property under `group` other than opacity is keyed or has an expression.
+  function animatedIn(group) {
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) {
+        if (animatedIn(p)) return true;
+      } else if (p.matchName.indexOf("Opacity") < 0 && (p.numKeys > 0 || (p.expression && p.expressionEnabled !== false))) return true;
+    }
+    return false;
+  }
+
+  // True when something moves the path in comp space over time: its keyframes, its shape groups'
+  // transforms, or the transform of its layer or of a parent of that layer.
+  function animatedPath(pe) {
+    if (pe.prop.numKeys) return true;
+    for (var i = 0; i < pe.groups.length; i++) if (animatedIn(MK.shapes.groupTransform(pe.groups[i]))) return true;
+    for (var l = pe.layer, n = 0; l && n < 200; l = l.parent, n++) if (animatedIn(l.transform)) return true;
+    return false;
+  }
 
   // Path space -> layer space: the enclosing shape groups at time t (identity for masks).
   function pathToLayer(pe, t) { return pe.mask ? MK.mat.identity() : MK.shapes.toLayerMatrix(pe.groups, t); }

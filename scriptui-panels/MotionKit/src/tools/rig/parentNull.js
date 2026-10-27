@@ -1,23 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Add Parent Null: a null at the selected layers' combined bounds (or their average position, or
 // the top layer's position) at the current time, and the layers parented to it without moving.
-// "Null per layer" makes one null per layer at its anchor point instead. Nulls go above the
-// top-most layer they parent and are 3D when all those layers are 3D (positions then use world
-// space, so the z depth is kept).
+// "Null per layer" makes one null per layer at its anchor point instead, and with re-parenting
+// on that null takes over the layer's old parent. Nulls go above the top-most layer they parent
+// and are 3D when all those layers are 3D, cameras and lights included (positions then use world
+// space, so the z depth is kept). With one null, a layer whose parent chain has another selected
+// layer keeps its parent: it already follows the null through that layer.
 
 (function () {
   var NAME = "Add Parent Null";
-  var U = MK.util, S = MK.space;
+  var U = MK.util, S = MK.space, R = MK.rig;
 
   // Where a layer "is": its anchor point in comp space (world space when `world`).
   function anchorOf(layer, t, world) {
-    var a = layer.transform.anchorPoint.valueAtTime(t, false);
+    var a = S.anchor(layer, t);
     return world ? S.toWorld(layer, a, t) : S.toComp(layer, a, t);
   }
 
   // The corners of a layer's bounds in comp (or world) space.
   function cornersOf(layer, t, world) {
-    var c = S.rectCorners(layer, t, false);
+    var c = R.corners(R.layerBounds(layer, t));
     if (!world) return S.toCompPoints(layer, c, t);
     return S.probe(layer, function (ev) {
       return U.map(c, function (p) { return ev("L.toWorld([" + p[0] + "," + p[1] + ",0])", t); });
@@ -56,21 +58,29 @@
       var layers = MK.sel.byIndex(ctx.layers);
       if (!layers.length) ctx.fail("select one or more layers.");
       var t = ctx.time;
-      var targets = U.filter(layers, function (l) { return o.reparentAll || !l.parent; });
+      var picked = {};
+      for (var j = 0; j < layers.length; j++) picked[layers[j].index] = true;
+      // One null for all: a layer below another selected layer follows the null through it.
+      function underPicked(l) {
+        for (var p = l.parent, n = 0; p && n < 200; p = p.parent, n++) if (picked[p.index]) return true;
+        return false;
+      }
+      var targets = U.filter(layers, function (l) { return !l.parent || (o.reparentAll && (o.perLayer || !underPicked(l))); });
       if (!targets.length) ctx.fail("every selected layer already has a parent. Turn on \"Re-parent layers that already have a parent\" in the options (Shift-click) to re-parent them.");
       var kept = layers.length - targets.length, i;
 
       if (o.perLayer) {
         for (i = 0; i < targets.length; i++) {
-          var L = targets[i], d3 = !!L.threeDLayer;
+          var L = targets[i], d3 = S.is3D(L);
           var n = makeNull(ctx, L.name + " Parent", anchorOf(L, t, d3), L, d3);
+          if (L.parent) n.parent = L.parent;
           L.parent = n;
         }
         return ctx.done("Added " + targets.length + (targets.length === 1 ? " null." : " nulls.") + (kept ? " " + kept + " layers kept their parent." : ""));
       }
 
       var all3D = true;
-      for (i = 0; i < layers.length; i++) if (!layers[i].threeDLayer) all3D = false;
+      for (i = 0; i < layers.length; i++) if (!S.is3D(layers[i])) all3D = false;
       var at;
       if (o.anchor === "top") at = anchorOf(layers[0], t, all3D);
       else if (o.anchor === "average") {

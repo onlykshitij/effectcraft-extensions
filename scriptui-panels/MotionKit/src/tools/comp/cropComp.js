@@ -74,6 +74,16 @@
     else p.setValue(add(p.value));
   }
 
+  // True when the layer or any of its parents has a transform that changes over time (keys or
+  // expressions). Opacity doesn't pass to children, so it doesn't count.
+  function movesInChain(layer) {
+    for (var l = layer, n = 0; l && n < 200; l = l.parent, n++) {
+      var tr = l.property("ADBE Transform Group");
+      for (var i = 1; i <= tr.numProperties; i++) if (tr.property(i).matchName !== "ADBE Opacity" && tr.property(i).isTimeVarying) return true;
+    }
+    return false;
+  }
+
   // Moves a layer by d in its comp, keys included (X and Y Position when separated).
   function shiftLayer(layer, d) {
     var tr = layer.transform, pos = tr.position;
@@ -120,7 +130,7 @@
         var par = layers[i].parent;
         if (par && !ids[par.id]) {
           layers[i].parent = null;
-          ctx.warn(layers[i].name + " was parented to " + par.name + ", which isn't selected; it was unparented first" + (par.transform.position.numKeys || par.transform.rotation.numKeys || par.transform.scale.numKeys ? " and won't follow that parent's animation." : "."));
+          ctx.warn(layers[i].name + " was parented to " + par.name + ", which isn't selected; it was unparented first" + (movesInChain(par) ? " and won't follow that parent's animation." : "."));
         }
       }
 

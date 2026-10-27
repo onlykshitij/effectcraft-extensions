@@ -202,8 +202,9 @@ MK.makeContext = function (tool) {
   return ctx;
 };
 
+// warnings: what ctx.warn collected (also appended to the message).
 MK.toResult = function (r, ctx) {
-  var out = { ok: true, message: "", created: ctx.created };
+  var out = { ok: true, message: "", created: ctx.created, warnings: ctx.warnings.slice() };
   if (r && typeof r === "object") {
     out.ok = r.ok !== false;
     out.message = r.message === undefined ? "" : String(r.message);
@@ -215,7 +216,8 @@ MK.toResult = function (r, ctx) {
 
 // Runs a tool or library item like a button click: saved options, overridden by `options`
 // (not saved). Problems come back as {ok: false, message} and are shown with alert unless
-// `quiet` is set. Never throws.
+// `quiet` is set, and so is the message of a run that worked with warnings (what it skipped).
+// Never throws.
 // how.setControls: the options dialog's OK, whose values also go into controls the selection
 // already has (MK.controls.ensure).
 MK.run = function (id, options, quiet, how) {
@@ -226,7 +228,7 @@ MK.run = function (id, options, quiet, how) {
   } catch (e) {
     r = { ok: false, message: MK.util.errText(e), created: [] };
   }
-  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  if ((!r.ok || (r.warnings && r.warnings.length)) && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
   return r;
 };
 

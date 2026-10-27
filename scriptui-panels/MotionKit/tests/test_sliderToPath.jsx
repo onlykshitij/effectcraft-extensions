@@ -2,7 +2,8 @@
 // Slider to Path: layers land on the path in comp space (shape group and layer transforms, a
 // parented layer), spread 0..100 on open paths and 0..75 on a closed mask path with four layers,
 // progress by arc length, wrapping on closed paths, orient along the tangent with an offset,
-// zero-length paths and a deleted path layer without NaN, bad selections, one undo step.
+// zero-length paths and a deleted path layer without NaN, renaming the path's layer, bad
+// selections, one undo step.
 // Comp positions are checked with EffectCraft's own sourcePointToComp.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var H = MotionKit.helpers;
@@ -143,6 +144,24 @@ var still = rider.transform.position.valueAtTime(0, true);
 dot.remove();
 T.check(T.near(rider.transform.position.valueAtTime(0, false), still) && isFinite(rider.transform.rotation.valueAtTime(0, false)), "a deleted path layer: the layer falls back to its own position, no NaN");
 
+// Renaming the path's layer keeps the link: the "Path Layer" Layer Control names it.
+var lane = comp.layers.addShape();
+lane.name = "Lane";
+lane.transform.position.setValue([500, 300]);
+var lp = lane.property("ADBE Root Vectors Group").addProperty("ADBE Vector Shape - Group").property("ADBE Vector Shape");
+var ls = new Shape();
+ls.vertices = [[-200, 0], [200, 0]];
+ls.closed = false;
+lp.setValue(ls);
+var car = T.solid(comp, "Car", 40, 40);
+T.select(comp, [car, lane], [lp]);
+r = MotionKit.run("sliderToPath", { orient: false });
+progress(car).setValue(50);
+lane.name = "Lane Renamed";
+lane.transform.position.setValue([500, 400]);
+T.check(r.ok && T.near(at(car), [500, 400], 1e-3) && car.property("ADBE Effect Parade").property("Slider to Path – Path Layer").property(1).value === lane.index,
+  "renaming and then moving the path's layer: the layer stays on the path (" + at(car)[0].toFixed(1) + ", " + at(car)[1].toFixed(1) + ")");
+
 // Several paths selected.
 T.select(comp, [a, track, plate], [path, mp]);
 T.check(!MotionKit.run("sliderToPath").ok && /only one path/.test(T.lastAlert()), "two paths: refused");
@@ -151,8 +170,8 @@ T.check(!MotionKit.run("sliderToPath").ok && /only one path/.test(T.lastAlert())
 var lone = T.solid(comp, "Lone", 20, 20);
 T.select(comp, [lone, track], [path]);
 MotionKit.run("sliderToPath");
-T.check(lone.transform.position.expression !== "" && lone.property("ADBE Effect Parade").numProperties === 1, "attached a third time");
+T.check(lone.transform.position.expression !== "" && lone.property("ADBE Effect Parade").numProperties === 2, "attached a third time (Path Progress and Path Layer controls)");
 app.executeCommand(app.findMenuCommandId("Undo"));
-T.check(lone.transform.position.expression === "" && lone.property("ADBE Effect Parade").numProperties === 0, "one Undo removes the slider and the expression");
+T.check(lone.transform.position.expression === "" && lone.property("ADBE Effect Parade").numProperties === 0, "one Undo removes the controls and the expression");
 
 T.done();

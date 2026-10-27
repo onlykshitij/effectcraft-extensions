@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Shapes from Vector: an SVG footage layer becomes a shape layer directly above it with the
 // artwork's colours, in the same place, with its parent, transform and timing; the source is
-// hidden or deleted; other layers are listed as skipped; non-vector layers alone are refused;
-// one Undo. Scripts can't write files headless (Allow Scripts to Write Files is off), so the
+// hidden or deleted (layers parented to a deleted source follow the shape layer); other layers
+// are listed as skipped; non-vector layers alone are refused; one Undo. Scripts can't write files headless (Allow Scripts to Write Files is off), so the
 // SVG is the fixture fixture_shapesFromVector_art.jsx instead of one written by the test.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var SH = MotionKit.helpers.shapes;
@@ -61,5 +61,21 @@ T.check(comp.numLayers === n0 && art.enabled, "one Undo removes the shape layer 
 T.select(comp, [art], []);
 r = MotionKit.run("shapesFromVector", { source: "delete" });
 T.check(r.ok && comp.numLayers === n0 && !comp.layer("Art") && r.created[0].parent.name === "Rig", "delete: the source is gone, the shape layer keeps the parent");
+app.executeCommand(app.findMenuCommandId("Undo"));
+
+// Delete, with a layer parented to the source while the source moves: it follows the new layer.
+art = comp.layer("Art");
+art.transform.position.setValueAtTime(0, [-40, 5]);
+art.transform.position.setValueAtTime(2, [60, 5]);
+var tag = T.solid(comp, "Tag", 10, 10, [1, 1, 0]);
+tag.parent = art;
+tag.transform.position.setValue([30, 20]);
+function tagAt(t) { comp.time = t; return tag.sourcePointToComp([5, 5]); }
+var tag0 = tagAt(0), tag1 = tagAt(1);
+comp.time = 1;
+T.select(comp, [art], []);
+r = MotionKit.run("shapesFromVector", { source: "delete" });
+T.check(r.ok && tag.parent && tag.parent.id === r.created[0].id && T.near(tag.transform.position.value, [30, 20]), "delete: Tag, parented to the source, now follows the shape layer, its position unchanged");
+T.check(T.near(tagAt(0), tag0, 1e-3) && T.near(tagAt(1), tag1, 1e-3), "and is where it was at 0 s and 1 s (" + tagAt(1) + ")");
 
 T.done();

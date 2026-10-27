@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Add Parent Null: world positions kept (rotation, scale, an existing parent, keyframes),
 // the null at the bounds centre / average / top layer, above the top layer, 3D when all are,
-// re-parent all, one null per layer, bad selections.
+// re-parent all (layers under another selected layer keep their parent), one null per layer
+// (taking over the old parent), exact shape-layer bounds, cameras and lights, bad selections.
 // Comp positions are checked with EffectCraft's own sourcePointToComp, not Motion Kit's helpers.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var H = MotionKit.helpers;
@@ -129,5 +130,63 @@ var mixed = T.solid(comp, "Flat", 10, 10);
 T.select(comp, [mixed, h1], []);
 r = MotionKit.run("parentNull", { reparentAll: true });
 T.check(r.ok && !r.created[0].threeDLayer, "a 2D null when not all layers are 3D");
+
+// Re-parent all with a hierarchy selected: Arm stays on Body, which moves.
+var body = T.solid(comp, "Body", 100, 100);
+body.transform.position.setValueAtTime(0, [200, 200]);
+body.transform.position.setValueAtTime(2, [600, 200]);
+var arm = T.solid(comp, "Arm", 50, 50);
+arm.parent = body;
+before = snap([body, arm]);
+T.select(comp, [body, arm], []);
+r = MotionKit.run("parentNull", { reparentAll: true });
+T.check(r.ok && body.parent.index === r.created[0].index && arm.parent.index === body.index && /1 kept their parent/.test(r.message),
+  "re-parent all: Body goes on the null, Arm (under the selected Body) keeps Body: " + r.message);
+T.check(unchanged([body, arm], before), "and Arm still moves with Body (t = 0, 1, 2)");
+
+// Null per layer with re-parent all: the new null takes over the old, moving parent.
+var body2 = T.solid(comp, "Body 2", 100, 100);
+body2.transform.position.setValueAtTime(0, [200, 400]);
+body2.transform.position.setValueAtTime(2, [600, 400]);
+body2.transform.rotation.setValue(15);
+var hand = T.solid(comp, "Hand", 50, 50);
+hand.parent = body2;
+before = snap([hand]);
+T.select(comp, [hand], []);
+r = MotionKit.run("parentNull", { reparentAll: true, perLayer: true });
+var hp = comp.layer("Hand Parent");
+T.check(r.ok && hp && hand.parent.index === hp.index && hp.parent && hp.parent.index === body2.index, "null per layer: Hand -> Hand Parent -> Body 2");
+T.check(unchanged([hand], before), "and Hand still moves with Body 2 (t = 0, 1, 2)");
+
+// A shape layer: the exact centre of its contents, not EffectCraft's padded, rounded rectangle.
+var sh = comp.layers.addShape();
+var grp = sh.property("ADBE Root Vectors Group").addProperty("ADBE Vector Group");
+grp.property("ADBE Vectors Group").addProperty("ADBE Vector Shape - Rect").property("ADBE Vector Rect Size").setValue([100, 50]);
+grp.property("ADBE Vectors Group").addProperty("ADBE Vector Graphic - Stroke").property("ADBE Vector Stroke Width").setValue(10);
+var gtr = grp.property("ADBE Vector Transform Group");
+gtr.property("ADBE Vector Position").setValue([200, 100]);
+gtr.property("ADBE Vector Rotation").setValue(45);
+gtr.property("ADBE Vector Scale").setValue([150, 150]);
+sh.transform.position.setValue([300, 300]);
+T.select(comp, [sh], []);
+r = MotionKit.run("parentNull");
+var mid = sh.sourcePointToComp([200, 100]);
+T.check(r.ok && T.near(r.created[0].transform.position.value, [mid[0], mid[1]], 1e-3),
+  "a shape layer's null sits at the centre of its rotated rectangle (" + r.created[0].transform.position.value[0].toFixed(3) + ", " + r.created[0].transform.position.value[1].toFixed(3) + ")");
+
+// Cameras and lights: a 3D null at their position, and they don't move.
+var cam = comp.layers.addCamera("Cam", [500, 300]);
+cam.transform.position.setValue([400, 250, -900]);
+var view = [H.space.toWorld(cam, [0, 0, 0]), H.space.toWorld(cam, [0, 0, 100])];
+T.select(comp, [cam], []);
+r = MotionKit.run("parentNull");
+T.check(r.ok && r.created[0].threeDLayer && T.near(r.created[0].transform.position.value, [400, 250, -900], 1e-3) && cam.parent.index === r.created[0].index,
+  "a camera gets a 3D null at its position: " + r.message);
+T.check(T.near(H.space.toWorld(cam, [0, 0, 0]), view[0], 1e-3) && T.near(H.space.toWorld(cam, [0, 0, 100]), view[1], 1e-3), "and keeps its place and direction");
+var light = comp.layers.addLight("Key", [500, 300]);
+light.transform.position.setValue([100, 50, -300]);
+T.select(comp, [light], []);
+r = MotionKit.run("parentNull", { perLayer: true });
+T.check(r.ok && comp.layer("Key Parent").threeDLayer && T.near(H.space.toWorld(light, [0, 0, 0]), [100, 50, -300], 1e-3), "a light, null per layer: a 3D null, the light stays put: " + r.message);
 
 T.done();

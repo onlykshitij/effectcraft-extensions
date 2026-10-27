@@ -3,7 +3,8 @@
 // are read with sampleImage through a comp that holds it), one layer per group in group order
 // directly above the original, transform, parent, timing, blending mode and 3D kept, the
 // original hidden or deleted, a subset of groups (a nested group counts as its top-level group),
-// root-level paints kept in every copy, bad selections, one Undo.
+// root-level paints kept in every copy, root-level paths kept only in the original (which stays
+// visible), bad selections, one Undo.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var SH = MotionKit.helpers.shapes;
 var UNDO = app.findMenuCommandId("Undo");
@@ -206,6 +207,38 @@ T.check(c1.startTime === 1 && c1.inPoint === fl.inPoint && c2.outPoint === 3, "s
 var r1 = SH.contents(c1), r2 = SH.contents(c2);
 T.check(r1.numProperties === 2 && r1.property(1).name === "One" && r1.property(2).matchName === "ADBE Vector Graphic - Stroke" &&
   r2.numProperties === 2 && r2.property(1).name === "Two" && r2.property(2).matchName === "ADBE Vector Graphic - Stroke", "a root-level stroke stays in every copy");
+
+// A path outside any group (with a 50 % fill) stays only in the original: in every copy it would
+// draw again, and two 50 % fills over each other make 75 %.
+var lc = T.comp("Loose Test", 300, 200, 5, 25);
+lc.time = 1;
+var lo = lc.layers.addShape();
+lo.name = "Loose";
+lo.transform.position.setValue([150, 100]);
+addGroup(lo, "Left", "rect", [40, 40], [-80, 0], [1, 0, 0]);
+addGroup(lo, "Right", "rect", [40, 40], [80, 0], [0, 0, 1]);
+var lp = SH.contents(lo).addProperty("ADBE Vector Shape - Rect");
+lp.property("ADBE Vector Rect Size").setValue([60, 60]);
+var lf = SH.contents(lo).addProperty("ADBE Vector Graphic - Fill");
+lf.property("ADBE Vector Fill Color").setValue([0, 1, 0]);
+lf.property("ADBE Vector Fill Opacity").setValue(50);
+var lbefore = pixels(lc, 1), lroot = SH.contents(lo);
+T.select(lc, [lo], []);
+r = MotionKit.run("extractShapes");
+var noLoose = r.created.length === 2;
+for (i = 0; i < r.created.length; i++) {
+  var cr = SH.contents(r.created[i]);
+  if (cr.numProperties !== 2 || cr.property(2).matchName !== "ADBE Vector Graphic - Fill") noLoose = false;
+}
+T.check(r.ok && noLoose, "every group extracted: the copies hold their group and the root fill, not the loose path");
+T.check(lo.enabled && !lroot.property(1).enabled && !lroot.property(2).enabled && lroot.property(3).enabled && /paths outside any group/.test(r.message), "the original keeps the path and stays visible, its groups switched off, and says so: " + r.message.split("\n")[1]);
+T.check(diff(lbefore, pixels(lc, 1)) <= TOL, "the comp renders the same, the path drawn once (largest block difference " + diff(lbefore, pixels(lc, 1)).toFixed(3) + ")");
+app.executeCommand(UNDO);
+T.select(lc, [lo], [SH.contents(lo).property(1)]);
+r = MotionKit.run("extractShapes");
+T.check(r.ok && SH.contents(r.created[0]).numProperties === 2 && SH.contents(lo).property(3).enabled && diff(lbefore, pixels(lc, 1)) <= TOL && !/draw below/.test(r.message), "one group (Left): the copy has no loose path either, the original keeps it, the comp renders the same");
+app.executeCommand(UNDO);
+comp.openInViewer();
 
 // A shape layer without groups.
 var flat = comp.layers.addShape();

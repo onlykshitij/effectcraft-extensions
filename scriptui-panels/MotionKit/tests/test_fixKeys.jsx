@@ -2,7 +2,8 @@
 // Fix Keys Time: keys left between frames (here by changing the comp's frame rate) snap to the
 // nearest comp frame, with the layer's start time counted; value, ease and interpolation are
 // kept; keys landing on one frame merge and the later one wins; each scope (selected keys,
-// selected properties, selected layers including effects); roving keys stay; the report;
+// selected properties, selected layers including effects); roving keys stay, also between keys
+// that move; the report;
 // bad selections; one undo step.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var LIN = KeyframeInterpolationType.LINEAR, BEZ = KeyframeInterpolationType.BEZIER;
@@ -73,6 +74,20 @@ var rt = cp.keyTime(2);
 T.select(comp, [C], []);
 r = MotionKit.run("fixKeys");
 T.check(cp.keyRoving(2) && T.near(cp.keyTime(2), rt) && /already on frames/.test(r.message), "a roving key is left to EffectCraft (" + rt.toFixed(4) + " s)");
+// Its neighbours move: removing them would end its roving, so it is rewritten and roves again.
+var comp4 = T.comp("Fix Roving", 200, 200, 10, 25);
+var RL = T.solid(comp4, "R", 20, 20), rp = RL.transform.position;
+rp.setValueAtTime(0.44, [0, 0]);
+rp.setValueAtTime(1, [100, 0]);
+rp.setValueAtTime(2.08, [100, 100]);
+rp.setInterpolationTypeAtKey(2, BEZ, BEZ);
+rp.setRovingAtKey(2, true);
+comp4.frameRate = 30;
+T.select(comp4, [RL], []);
+r = MotionKit.run("fixKeys");
+T.check(/moved 2 keyframes/.test(r.message) && rp.numKeys === 3 && onFrame(rp.keyTime(1)) && onFrame(rp.keyTime(3)), "the keys around a roving key snap: " + r.message);
+T.check(rp.keyRoving(2) && rp.keyTime(2) > rp.keyTime(1) && rp.keyTime(3) > rp.keyTime(2) && T.near(rp.keyValue(2), [100, 0]),
+  "and the roving key between them still roves (" + rp.keyTime(2).toFixed(4) + " s)");
 
 // ---- merging: the later key wins
 var comp2 = T.comp("Fix Merge", 200, 200, 10, 25);

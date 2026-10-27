@@ -431,4 +431,20 @@ for (var ii = 0; ii < icons.length; ii++) {
   T.check(ok, "icon " + icons[ii][0] + " draws inside its 24 px square (" + g.ops.length + " paths)");
 }
 
+// ---- a run that worked with warnings shows its message (what it skipped); quiet runs don't
+MotionKit.registerTool({
+  id: "warnProbe", name: "Warn Probe", category: "Rig", description: "Warns when asked.", icon: ["M3 3 H21"], needsComp: false,
+  options: [{ key: "warn", label: "Warn", type: "checkbox", "default": true }],
+  run: function (ctx, o) {
+    if (o.warn) ctx.warn("Skipped 1 thing.");
+    return ctx.done("Warn Probe: did 2 things.");
+  }
+});
+T.alerts = [];
+var wr = MotionKit.run("warnProbe");
+T.check(wr.ok && wr.warnings.length === 1 && T.alerts.length === 1 && T.alerts[0] === "Warn Probe: did 2 things.\nSkipped 1 thing.", "a run that worked with a warning shows its message: " + T.alerts.join(" // "));
+MotionKit.run("warnProbe", null, true);
+MotionKit.run("warnProbe", { warn: false });
+T.check(T.alerts.length === 1, "quiet runs, and runs without warnings, show nothing");
+
 T.done();

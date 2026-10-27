@@ -282,7 +282,7 @@
         }
       }
       var msg = NAME + ": eased " + count + (count === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
-      if (withKeys.length > props.length) msg += " Skipped " + (withKeys.length - props.length) + " that can't ease (one keyframe, or not a number).";
+      if (withKeys.length > props.length) ctx.warn("Skipped " + (withKeys.length - props.length) + " that can't ease (one keyframe, or not a number).");
       return ctx.done(msg);
     }
   });

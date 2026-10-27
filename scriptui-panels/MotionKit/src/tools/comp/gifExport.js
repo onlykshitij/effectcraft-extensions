@@ -4,6 +4,8 @@
 // are render settings too, and Loop is the GIF output module's loop flag, which the scripting
 // OutputModule doesn't expose, so it goes through app.run("renderQueue.setOutputModule").
 // Other queued items are switched off while rendering and switched back on after.
+// A GIF never replaces another: when "<comp>.gif" is taken (a file there, or the output of
+// another render queue item), the next free "<comp> 2.gif", "<comp> 3.gif"... is used.
 
 (function () {
   var NAME = "GIF Export", U = MK.util;
@@ -17,6 +19,22 @@
     if (app.project.file) return app.project.file.path;
     if (Folder.desktop) return Folder.desktop.fsName;
     return "";
+  }
+
+  // True when `path` is a file, or the output of a render queue item other than number `self`
+  // (done or waiting, this run's earlier items too).
+  // shortcut: EffectCraft lets a script see files only inside the saved project's folder
+  // (elsewhere File.exists is false), so a GIF left elsewhere by an earlier session can still be
+  // replaced; check the disk there too once scripts may read it.
+  function taken(rq, path, self) {
+    if (new File(path).exists) return true;
+    for (var i = 1; i <= rq.numItems; i++) {
+      for (var m = 1; i !== self && m <= rq.item(i).numOutputModules; m++) {
+        var f = rq.item(i).outputModule(m).file;
+        if (f && f.fsName === path) return true;
+      }
+    }
+    return false;
   }
 
   // Runs a settings change; EffectCraft refuses one that changes nothing, which is fine here.
@@ -51,18 +69,18 @@
       var comps = U.filter(app.project.selection, function (it) { return it instanceof CompItem; });
       if (!comps.length && ctx.comp) comps = [ctx.comp];
       if (!comps.length) ctx.fail("select one or more comps in the Project panel, or open a comp.");
-      var rq = app.project.renderQueue, folder = folderOf(o), items = [], used = {}, i;
+      var rq = app.project.renderQueue, folder = folderOf(o), items = [], i;
       for (i = 0; i < comps.length; i++) {
         var c = comps[i];
-        var base = String(c.name).replace(/[\\\/:*?"<>|]/g, "_"), file = base, n = 2;
-        while (U.has(used, file)) file = base + " " + n++;
-        used[file] = true;
+        var base = (folder ? folder + "/" : "") + String(c.name).replace(/[\\\/:*?"<>|]/g, "_"), n = 2;
         var it = rq.items.add(c);
         var idx = rq.numItems;
         it.outputModule(1).applyTemplate("GIF");
         change(function () { app.run("renderQueue.setOutputModule", { index: idx, loop: o.loop === "forever" }); });
         change(function () { it.setSettings({ resolution: o.scale / 100, timeSpan: o.workArea ? "workArea" : "comp", frameRate: o.fps > 0 ? o.fps : null }); });
-        it.outputModule(1).file = new File((folder ? folder + "/" : "") + file + ".gif");
+        // Read back through the output module: a bare name resolves to EffectCraft's default folder.
+        it.outputModule(1).file = new File(base + ".gif");
+        while (taken(rq, it.outputModule(1).file.fsName, idx)) it.outputModule(1).file = new File(base + " " + n++ + ".gif");
         items.push(it);
       }
 

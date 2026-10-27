@@ -3,7 +3,7 @@
 // end (law of cosines), Mid Point Offset, out of reach, Stretch and Stretch Adjust, root == end
 // without NaN, Bend Direction, Flip with Flip Range and Flip Balance, the hard and soft ground
 // clamp, Mid Point Realism, curvature and point offsets on the path, the controller circle, a
-// deleted root, one and two selected layers, bad selection, one undo step.
+// deleted root, one and two selected layers, a light as the root, bad selection, one undo step.
 // Comp positions are checked with EffectCraft's own sourcePointToComp.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 
@@ -197,5 +197,15 @@ MotionKit.run("limb");
 T.check(comp.numLayers === n0 + 4, "a fourth rig");
 app.executeCommand(app.findMenuCommandId("Undo"));
 T.check(comp.numLayers === n0, "one Undo removes all of it");
+
+// A light as the root: it has no anchor point, so its origin (its position) is the root.
+var lamp = comp.layers.addLight("Lamp", [500, 300]);
+lamp.transform.position.setValue([300, 200, 0]);
+T.select(comp, [lamp], []);
+r = MotionKit.run("limb", { length: 200 });
+// r.created: the limb, the controller, the joint.
+var lampCtrl = r.created[1], jl = r.created[2].transform.position.valueAtTime(0, false);
+T.check(r.ok && lampCtrl && T.near(lampCtrl.transform.position.value, [300, 360]), "a light as the root: the controller starts below it (" + r.message + ")");
+T.check(T.near(dist([jl[0], jl[1]], [300, 200]), 100, 1e-6) && T.near(dist([jl[0], jl[1]], [300, 360]), 100, 1e-6), "and the joint is 100 from the light and from the controller");
 
 T.done();
