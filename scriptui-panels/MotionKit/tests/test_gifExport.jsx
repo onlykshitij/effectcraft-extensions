@@ -2,7 +2,7 @@
 // GIF Export: queues a GIF render item per comp and renders it; the file exists, starts with a
 // GIF header, has the scaled size, frame rate and time span (read back by importing it), loops
 // or not (the NETSCAPE2.0 block); other queued items aren't rendered; the default folder is the
-// project's; nothing to export.
+// project's; an existing GIF is never replaced (the next free "<comp> 2.gif"); nothing to export.
 // Rendering is allowed headless. Reading files is only allowed in the project's folder, so the
 // test saves its project next to itself first; if that fails, the file checks are skipped.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
@@ -62,16 +62,25 @@ if (canRead) {
   writeLn("SKIP reading the GIF: the project couldn't be saved next to the test, so EffectCraft won't let the script read files there (" + why + ")");
 }
 
-// ---- defaults: the project's folder, full size, the comp's rate, the whole comp, loop forever
+// ---- defaults: the project's folder, full size, the comp's rate, the whole comp, loop forever.
+// G Comp.gif is there already, so this one is G Comp 2.gif.
 T.select(comp, [], []);
 r = MotionKit.run("gifExport", { folder: "", scale: 100, fps: 0, loop: "forever", workArea: false });
+var path2 = MKT_DIR + "/G Comp 2.gif";
 T.check(r.ok && rq.item(rq.numItems).status === RQItemStatus.DONE, "it renders again: " + r.message);
 if (canRead) {
-  T.check(rq.item(rq.numItems).outputModule(1).file.fsName === path, "an empty folder means the project's folder");
-  var b2 = bytes(path);
+  T.check(rq.item(rq.numItems).outputModule(1).file.fsName === path2 && r.message.indexOf(path2) >= 0, "an empty folder means the project's folder; G Comp.gif is taken, so G Comp 2.gif");
+  T.check(word(bytes(path), 6) === 32, "G Comp.gif isn't replaced: still the 32 px wide first render");
+  var b2 = bytes(path2);
   T.check(b2.substring(0, 6) === "GIF89a" && word(b2, 6) === 64 && word(b2, 8) === 48 && b2.indexOf("NETSCAPE2.0") > 0, "64 x 48 px with a looping block");
-  var g2 = app.project.importFile(new ImportOptions(new File(path)));
+  var g2 = app.project.importFile(new ImportOptions(new File(path2)));
   T.check(T.near(g2.frameRate, 10) && T.near(g2.duration, 1), "imported back: the comp's 10 fps over its whole second");
+  // With the queue items gone, the files on disk alone still keep both names taken.
+  for (var qi = rq.numItems; qi >= 1; qi--) if (rq.item(qi).comp.id === comp.id) rq.item(qi).remove();
+  r = MotionKit.run("gifExport", { folder: MKT_DIR });
+  T.check(r.ok && r.message.indexOf(MKT_DIR + "/G Comp 3.gif") >= 0, "no queue items left, the files alone: G Comp 3.gif (" + r.message + ")");
+} else {
+  T.check(rq.item(rq.numItems).outputModule(1).file.fsName !== rq.item(rq.numItems - 1).outputModule(1).file.fsName, "the queue's earlier G Comp output isn't reused");
 }
 
 // ---- comps selected in the Project panel

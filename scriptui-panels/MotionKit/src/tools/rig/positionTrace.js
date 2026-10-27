@@ -7,7 +7,8 @@
 // vertices, the newest first. Each sample is the target's anchor point taken to comp space at
 // its own time (toComp(p, t)), then into the trace layer (fromComp). Trace Smooth r replaces
 // each vertex with the mean of its r neighbours on either side (fewer near the two ends, so the
-// ends stay put). Taper Out thins the stroke towards the oldest end.
+// ends stay put). Taper Out thins the stroke towards the oldest end. Cameras and lights are
+// skipped: they have no anchor point, and toComp of a camera's own position is degenerate.
 
 (function () {
   var NAME = "Position Trace", ID = "positionTrace";
@@ -75,8 +76,11 @@
       { key: "taper", label: "Taper Out (the trail thins towards its oldest end)", type: "checkbox", "default": true }
     ],
     run: function (ctx, o) {
-      var layers = MK.sel.byIndex(ctx.layers);
-      if (!layers.length) ctx.fail("select one or more layers to trace.");
+      var all = MK.sel.byIndex(ctx.layers);
+      if (!all.length) ctx.fail("select one or more layers to trace.");
+      var layers = U.filter(all, function (l) { return !MK.space.isCameraOrLight(l); });
+      var skipped = all.length - layers.length;
+      if (!layers.length) ctx.fail("cameras and lights have no anchor point to trace. Select a layer instead, such as a null parented to a light.");
       for (var i = 0; i < layers.length; i++) {
         var L = layers[i];
         var sh = ctx.comp.layers.addShape();
@@ -109,7 +113,8 @@
         }
         ctx.created.push(sh);
       }
-      return ctx.done("Added " + layers.length + (layers.length === 1 ? " trace." : " traces."));
+      return ctx.done("Added " + layers.length + (layers.length === 1 ? " trace." : " traces.") +
+        (skipped ? " Skipped " + skipped + (skipped === 1 ? " camera or light" : " cameras and lights") + " (they have no anchor point to trace)." : ""));
     }
   });
 })();

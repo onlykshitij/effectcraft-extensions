@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Interpolation widget (2 x 1): Bezier, Hold and Linear buttons set the temporal interpolation
 // of the selected keyframes on both sides. Only the types change (MK.keys.setInterp), so a key
-// switched to Linear or Hold gets its ease back when it goes back to Bezier.
+// switched to Linear or Hold gets its ease back when it goes back to Bezier, and a Linear key
+// that was never eased keeps its Linear speed. Shift-click (or right-click) opens its options
+// instead of setting a type.
 
 (function () {
   var NAME = "Interpolation", U = MK.util;
@@ -46,11 +48,12 @@
       var gap = 6, pad = Math.max(4, Math.round(w.h * 0.11));
       var b = Math.max(12, Math.min(w.h - 2 * pad, Math.floor((w.w - 2 * pad - 2 * gap) / 3)));
       var x0 = Math.round((w.w - 3 * b - 2 * gap) / 2), y0 = Math.round((w.h - b) / 2), r = Math.max(2, w.style.radius - 2);
+      w.onShift = function () { w.options("interpolation"); };
       w.buttons = {};
       for (var i = 0; i < ORDER.length; i++) {
         (function (k, x) {
           w.buttons[k] = w.part(k, [x, y0, b, b], {
-            tip: TYPES[k].tip,
+            tip: TYPES[k].tip + ". Shift-click: options",
             click: function () { w.run({ type: k }); },
             draw: function (g) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w); }
           });

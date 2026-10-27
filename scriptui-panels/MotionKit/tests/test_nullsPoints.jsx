@@ -2,7 +2,8 @@
 // Nulls <-> Points: nulls at the vertices' comp positions (nested, skewed shape groups, a rotated
 // and parented layer, masks); "points follow nulls" leaves the path unchanged until a null moves,
 // then the vertex follows; tangents follow a rotated null when asked; "nulls follow points"
-// tracks an animated mask; parent null; deleted nulls; foreign expressions; bad selection; undo.
+// tracks an animated mask; parent null; deleted nulls; renamed nulls and path layers (Layer
+// Controls); the note on an animated path layer; foreign expressions; bad selection; undo.
 // Comp positions are checked with EffectCraft's own sourcePointToComp.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var H = MotionKit.helpers;
@@ -68,6 +69,7 @@ var expected = H.util.map(before.vertices, blobToComp);
 T.select(comp, [], [path]);
 var r = MotionKit.run("nullsPoints");
 T.check(r.ok && r.created.length === 4 && comp.numLayers === n0 + 4, "four nulls for four vertices: " + r.message);
+T.check(!/no longer moves/.test(r.message), "no note about animation when nothing about the path is animated");
 var nulls = [];
 for (var i = 1; i <= 4; i++) nulls.push(comp.layer("Blob Point " + i));
 T.check(nulls[0] && nulls[3] && nulls[0].nullLayer, "named \"Blob Point 1\" to \"Blob Point 4\"");
@@ -83,6 +85,10 @@ nulls[1].transform.position.setValue([pos(nulls[1])[0] + 30, pos(nulls[1])[1] - 
 var moved = path.valueAtTime(0, false);
 T.check(T.near(blobToComp(moved.vertices[1]), [expected[1][0] + 30, expected[1][1] - 12], 1e-3), "moving null 2 moves vertex 2 by the same comp-space offset");
 T.check(T.near(moved.vertices[0], before.vertices[0], 1e-6) && T.near(moved.outTangents[1], before.outTangents[1], 1e-6), "the other vertices and the tangents stay");
+var link = sh.property("ADBE Effect Parade").property("Nulls ↔ Points – Blob Point 2");
+nulls[1].name = "Knee";
+T.check(link && link.property(1).value === nulls[1].index && T.near(path.valueAtTime(0, false).vertices[1], moved.vertices[1], 1e-6) && path.expressionError === "",
+  "renaming null 2 keeps vertex 2 on it (the Layer Control \"Nulls ↔ Points – Blob Point 2\" on Blob names it)");
 
 // A deleted null: that vertex falls back to the path's own value, never NaN.
 nulls[3].remove();
@@ -149,9 +155,27 @@ comp.time = 1;
 var e2 = solid.sourcePointToComp([190, 150]);
 comp.time = 0;
 T.check(T.near(pos(pl3, 1), e2, 1e-3), "and follows when the layer moves");
+solid.name = "Plate Renamed";
+solid.transform.position.setValue([400, 380]);
+comp.time = 1;
+var e3 = solid.sourcePointToComp([190, 150]);
+comp.time = 0;
+T.check(T.near(pos(pl3, 1), e3, 1e-3) && pl3.property("ADBE Effect Parade").property("Nulls ↔ Points – Path Layer").property(1).value === solid.index,
+  "and after renaming the path's layer (its \"Path Layer\" Layer Control names it)");
 mask.remove();
 var pre = pl3.transform.position.valueAtTime(1, true);
 T.check(T.near(pos(pl3, 1), [pre[0], pre[1]]) && isFinite(pos(pl3, 1)[0]), "a removed mask: the null falls back to its own position, no NaN");
+
+// Points follow nulls on a moving layer: the message says its animation no longer moves the path.
+var mover = comp.layers.addShape();
+mover.name = "Mover";
+var pm = mover.property("ADBE Root Vectors Group").addProperty("ADBE Vector Shape - Group").property("ADBE Vector Shape");
+pm.setValue(w);
+mover.transform.position.setValueAtTime(0, [200, 300]);
+mover.transform.position.setValueAtTime(2, [800, 300]);
+T.select(comp, [], [pm]);
+r = MotionKit.run("nullsPoints");
+T.check(r.ok && /the animation of Mover \(transform, shape groups or path keyframes\) no longer moves it/.test(r.message), "an animated path layer: " + r.message);
 
 // Foreign expressions: kept on "no".
 var s3 = comp.layers.addShape();
@@ -171,6 +195,6 @@ T.select(comp, [], [p3]);
 r = MotionKit.run("nullsPoints");
 T.check(r.ok && comp.numLayers === nBefore + 2 && p3.expression.indexOf("// Motion Kit") === 0, "runs again after saying yes");
 app.executeCommand(app.findMenuCommandId("Undo"));
-T.check(comp.numLayers === nBefore && p3.expression === "value", "one Undo removes the nulls and restores the expression");
+T.check(comp.numLayers === nBefore && p3.expression === "value" && s3.property("ADBE Effect Parade").numProperties === 0, "one Undo removes the nulls and their Layer Controls and restores the expression");
 
 T.done();

@@ -34,7 +34,31 @@ MK.fail = function (message) { throw new MK.UserError(message); };
 // The prompts tools use. Tests replace them to answer questions without a person.
 MK.prompts = {
   alert: function (msg) { alert(msg, MK.NAME); },
-  confirm: function (msg) { return confirm(msg); }
+  // EffectCraft's confirm() shows the question as a notice and answers yes, so there it asks in
+  // a dialog (the message wrapped by hand: EffectCraft's static text doesn't wrap).
+  confirm: function (msg) {
+    if (!MK.util.EFFECTCRAFT) return confirm(msg);
+    var w = new Window("dialog", MK.NAME), yes = false, words = String(msg).split(" "), line = "";
+    w.orientation = "column";
+    w.alignChildren = ["left", "top"];
+    for (var i = 0; i <= words.length; i++) {
+      if (i < words.length && (line + " " + words[i]).length <= 64) line = line ? line + " " + words[i] : words[i];
+      else {
+        if (line) w.add("statictext", undefined, line);
+        line = i < words.length ? words[i] : "";
+      }
+    }
+    var row = w.add("group");
+    row.alignment = ["right", "top"];
+    var no = row.add("button", undefined, "No", { name: "cancel" });
+    var ok = row.add("button", undefined, "Yes", { name: "ok" });
+    ok.onClick = function () { yes = true; w.close(1); };
+    no.onClick = function () { w.close(2); };
+    w.defaultElement = ok;
+    w.cancelElement = no;
+    w.show();
+    return yes;
+  }
 };
 
 MK.util = (function () {
@@ -791,10 +815,16 @@ MK.controls = (function () {
     return null;
   };
   // The control called `name`; created with `value` when the layer has none, so one control set
-  // drives every property a tool touched on that layer. Returns the effect.
+  // drives every property a tool touched on that layer. An existing control keeps its value,
+  // except during a run from the options dialog's OK (overwrite, set by MK.runTool), whose
+  // values the user just chose. Returns the effect.
+  C.overwrite = false;
   C.ensure = function (layer, matchName, name, value) {
     var e = C.find(layer, name, matchName);
-    if (e) return e;
+    if (e) {
+      if (C.overwrite && value !== undefined && value !== null) C.set(e, value);
+      return e;
+    }
     var fx = C.fx(layer);
     if (!fx) MK.fail(layer.name + " can't take effects, so it can't hold Motion Kit controls.");
     e = fx.addProperty(matchName);
@@ -841,6 +871,17 @@ MK.expr = (function () {
     return e.indexOf(X.MARK + (toolId || "")) === 0;
   };
   X.hasForeign = function (prop) { return !!prop.expression && !X.isOurs(prop); };
+  // Every property under `group` (a layer or property group) whose expression tool `toolId`
+  // wrote (its first line is exactly the mark), added to `out` (returned).
+  X.ofTool = function (group, toolId, out) {
+    out = out || [];
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) X.ofTool(p, toolId, out);
+      else if (p instanceof Property && p.canSetExpression && String(p.expression || "").split("\n")[0] === X.MARK + toolId) out.push(p);
+    }
+    return out;
+  };
   // A JavaScript string literal, for names and text inside expressions.
   X.str = function (s) { return JSON.stringify(String(s)); };
   // Which properties a tool may write: those that can take an expression, minus (when the user
@@ -861,10 +902,21 @@ MK.expr = (function () {
   };
   X.set = function (prop, toolId, body) { prop.expression = X.make(toolId, body); };
   // "Bounce added to 2 properties. Skipped 1 without two keyframes. Kept 1 existing expression."
-  X.report = function (toolName, applied, invalid, kept, needs) {
-    var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties.");
-    if (invalid) s += " Skipped " + invalid + " without " + needs + ".";
-    if (kept) s += " Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions.");
+  // resting: how many of the applied properties stop at their last keyframe (MK.keys.atRest),
+  // for tools that carry the arriving speed on; linear: how many last keyframes were made to
+  // arrive Linear (MK.keys.offerLinearArrival). With ctx, the skipped, kept and stopped notes
+  // go through ctx.warn, so the panel shows them although the run worked.
+  X.report = function (toolName, applied, invalid, kept, needs, resting, linear, ctx) {
+    var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties."), notes = [];
+    if (invalid) notes.push("Skipped " + invalid + " without " + needs + ".");
+    if (kept) notes.push("Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions."));
+    if (resting) notes.push((resting === applied ? (applied === 1 ? "It stops" : "They stop") : resting + " of them stop") +
+      " at the last keyframe (eased or Hold), so nothing moves after it: make that keyframe Linear or ease it less.");
+    if (linear) s += " Made " + (linear === 1 ? "one last keyframe" : linear + " last keyframes") + " arrive Linear.";
+    for (var i = 0; i < notes.length; i++) {
+      if (ctx) ctx.warn(notes[i]);
+      else s += " " + notes[i];
+    }
     return s;
   };
   // decide() then set() on each: body is a string or function(prop) -> string.
@@ -971,10 +1023,23 @@ MK.space = (function () {
   S.fromWorld = function (layer, p, t) { return convert(layer, "fromWorld", [p], tm(layer, t))[0]; };
   function tm(layer, t) { return t === undefined ? layer.containingComp.time : t; }
 
+  // Cameras and lights: always 3D (threeDLayer is undefined on them), with no anchor point or size.
+  S.isCameraOrLight = function (layer) {
+    return (typeof CameraLayer !== "undefined" && layer instanceof CameraLayer) || (typeof LightLayer !== "undefined" && layer instanceof LightLayer);
+  };
+  S.is3D = function (layer) { return !!layer.threeDLayer || S.isCameraOrLight(layer); };
+
   // True when the layer and all its parents are 2D: then layer -> comp is affine.
   S.is2D = function (layer) {
-    for (var l = layer, n = 0; l && n < 200; l = l.parent, n++) if (l.threeDLayer) return false;
+    for (var l = layer, n = 0; l && n < 200; l = l.parent, n++) if (S.is3D(l)) return false;
     return true;
+  };
+
+  // The anchor point at comp time t; [0, 0, 0] (the layer's origin) for cameras and lights,
+  // which have none.
+  S.anchor = function (layer, t) {
+    var ap = layer.transform.anchorPoint;
+    return ap ? ap.valueAtTime(tm(layer, t), false) : [0, 0, 0];
   };
 
   // The 2D affine matrix layer -> comp at time t (only for S.is2D layers).
@@ -1004,7 +1069,7 @@ MK.space = (function () {
     var r = null;
     try { if (layer.sourceRectAtTime) r = layer.sourceRectAtTime(tm(layer, t), !!extents); } catch (e) {}
     if (!r) {
-      var a = layer.transform.anchorPoint.valueAtTime(tm(layer, t), false);
+      var a = S.anchor(layer, t);
       return [[a[0], a[1], 0], [a[0], a[1], 0], [a[0], a[1], 0], [a[0], a[1], 0]];
     }
     var x0 = r.left, y0 = r.top, x1 = r.left + r.width, y1 = r.top + r.height;
@@ -1015,7 +1080,7 @@ MK.space = (function () {
   };
   // The anchor point in comp space (where the layer "is").
   S.anchorInComp = function (layer, t) {
-    return S.toComp(layer, layer.transform.anchorPoint.valueAtTime(tm(layer, t), false), t);
+    return S.toComp(layer, S.anchor(layer, t), t);
   };
   // A comp-space point in the layer's parent space (the space its Position is in).
   S.compToParent = function (layer, p, t) {
@@ -1062,6 +1127,44 @@ MK.keys = (function () {
       k.spatialAutoBezier = prop.keySpatialAutoBezier(i);
     }
     return k;
+  };
+  // True when key i arrives (arriving) or leaves with no speed: Hold, or Bezier with every ease
+  // speed 0 (Easy Ease). Tools that carry the speed on past the key have nothing to use there.
+  // Also true when the segment on that side holds (the key before arriving holds its value) or
+  // doesn't change the value.
+  K.atRest = function (prop, i, arriving) {
+    var j = arriving ? i - 1 : i + 1, H = KeyframeInterpolationType.HOLD;
+    if (j >= 1 && j <= prop.numKeys) {
+      if ((arriving ? prop.keyOutInterpolationType(j) : prop.keyInInterpolationType(j)) === H) return true;
+      if (JSON.stringify(prop.keyValue(i)) === JSON.stringify(prop.keyValue(j))) return true;
+    }
+    return K.easedStop(prop, i, arriving) || (arriving ? prop.keyInInterpolationType(i) : prop.keyOutInterpolationType(i)) === H;
+  };
+  // Key i's own side is Bezier with every ease speed 0 (Easy Ease): making that side Linear
+  // gives it the segment's speed.
+  K.easedStop = function (prop, i, arriving) {
+    if ((arriving ? prop.keyInInterpolationType(i) : prop.keyOutInterpolationType(i)) !== KeyframeInterpolationType.BEZIER) return false;
+    var e = arriving ? prop.keyInTemporalEase(i) : prop.keyOutTemporalEase(i);
+    for (var k = 0; k < e.length; k++) if (Math.abs(e[k].speed) > 1e-6) return false;
+    return true;
+  };
+  // Asks to make the last keyframe of each property that eases to a stop (Bezier, speed 0)
+  // arrive Linear, so a tool that carries the arriving speed on has one to use. Hold arrivals
+  // are left alone: the value jumps there. Returns how many keyframes it changed.
+  K.offerLinearArrival = function (props, toolName) {
+    // Only where a Linear arrival brings speed back: not after a Hold or an unchanged value.
+    var eased = MK.util.filter(props, function (p) {
+      var n = p.numKeys;
+      return K.easedStop(p, n, true) && p.keyOutInterpolationType(n - 1) !== KeyframeInterpolationType.HOLD && JSON.stringify(p.keyValue(n)) !== JSON.stringify(p.keyValue(n - 1));
+    });
+    if (!eased.length) return 0;
+    var what = eased.length === 1 ? MK.sel.label(eased[0]) + " eases to a stop at its last keyframe" : eased.length + " properties ease to a stop at their last keyframe";
+    if (!MK.prompts.confirm(toolName + ": " + what + ", so there's no speed left to carry on. Make that keyframe arrive Linear?")) return 0;
+    for (var i = 0; i < eased.length; i++) {
+      var n = eased[i].numKeys;
+      eased[i].setInterpolationTypeAtKey(n, KeyframeInterpolationType.LINEAR, eased[i].keyOutInterpolationType(n));
+    }
+    return eased.length;
   };
   K.readAll = function (prop) {
     var out = [];
@@ -1123,12 +1226,27 @@ MK.keys = (function () {
     }
     return ks.length;
   };
+  // True for the ease EffectCraft keeps on a key side that was never eased: speed 0, 100 / 6 %.
+  function neverEased(eases) {
+    for (var d = 0; d < eases.length; d++) if (Math.abs(eases[d].speed) > 1e-9 || Math.abs(eases[d].influence - 100 / 6) > 1e-6) return false;
+    return true;
+  }
   // Sets both interpolation types of key i when the property takes them; false when it can't.
   // Only the types change: EffectCraft keeps a key's temporal ease while it is Linear or Hold,
   // so switching back to Bezier brings the ease back (setTemporalEaseAtKey would overwrite it).
+  // A Linear side that was never eased would come back with that default and stop at the key:
+  // turning both sides Bezier, it gets the ease it showed while Linear, so the motion keeps.
   K.setInterp = function (prop, i, inType, outType) {
     if (!prop.isInterpolationTypeValid(inType) || !prop.isInterpolationTypeValid(outType)) return false;
+    var BEZ = KeyframeInterpolationType.BEZIER, LIN = KeyframeInterpolationType.LINEAR, bez = inType === BEZ && outType === BEZ;
+    var wasIn = bez && prop.keyInInterpolationType(i) === LIN ? prop.keyInTemporalEase(i) : null;
+    var wasOut = bez && prop.keyOutInterpolationType(i) === LIN ? prop.keyOutTemporalEase(i) : null;
     prop.setInterpolationTypeAtKey(i, inType, outType);
+    if (wasIn || wasOut) {
+      var inE = prop.keyInTemporalEase(i), outE = prop.keyOutTemporalEase(i);
+      var fixIn = wasIn && neverEased(inE), fixOut = wasOut && neverEased(outE);
+      if (fixIn || fixOut) prop.setTemporalEaseAtKey(i, K.fit(fixIn ? wasIn : inE, inE.length), K.fit(fixOut ? wasOut : outE, outE.length));
+    }
     return true;
   };
   // Removes keys by 1-based index (any order).
@@ -1223,11 +1341,16 @@ MK.anim = (function () {
   };
 
   // Moves keys `indices` (1-based) of prop to newTime(key): all are read, removed, then written,
-  // so they can't land on each other. A key landing on an unmoved key replaces it.
+  // so they can't land on each other. A key landing on an unmoved key replaces it. Unmoved
+  // roving keys are rewritten in place first: removing a roving key's neighbours ends its roving.
   A.move = function (prop, indices, newTime) {
+    var moving = {}, stay = [];
+    for (var j = 0; j < indices.length; j++) moving[indices[j]] = true;
+    for (var i = 1; i <= prop.numKeys; i++) if (!moving[i] && prop.keyRoving(i)) stay.push(K.read(prop, i));
     var ks = U.map(indices, function (i) { return K.read(prop, i); });
-    K.remove(prop, indices);
-    return A.writeAll(prop, ks, newTime);
+    K.remove(prop, indices.concat(U.map(stay, function (k) { return k.index; })));
+    A.writeAll(prop, stay.concat(ks), function (k) { return moving[k.index] ? newTime(k) : k.time; });
+    return ks.length;
   };
 
   // The properties among `props` that have selected keyframes.
@@ -1252,9 +1375,10 @@ MK.anim = (function () {
 
   // The average speed from key a to key b, one entry per temporal ease dimension, in the units
   // KeyframeEase speeds use: signed per dimension, or the path length per second for spatial
-  // and other single-ease array values.
+  // and other single-ease array values. Seconds of layer time: EffectCraft measures ease speeds
+  // there, so a 200 % stretched layer needs twice the speed (key times are comp time).
   A.avgSpeed = function (prop, a, b) {
-    var dims = prop.keyOutTemporalEase(a).length, dt = prop.keyTime(b) - prop.keyTime(a);
+    var dims = prop.keyOutTemporalEase(a).length, dt = (prop.keyTime(b) - prop.keyTime(a)) * 100 / (MK.sel.layerOf(prop).stretch || 100);
     var va = prop.keyValue(a), vb = prop.keyValue(b), out = [];
     if (!(dt > 0)) dt = 1;
     if (!U.isArray(va)) return [(vb - va) / dt];
@@ -1279,7 +1403,7 @@ MK.anim = (function () {
 // ---- src/core/36_rig.js
 // Helpers for the Rig tools: the path properties in the selection (shape paths and mask paths),
 // expression text that reads a path or shape group, the shape-group matrix inside expressions,
-// sampled path outlines for bounds, and label colours.
+// Layer Controls that name layers, sampled path outlines and exact shape bounds, and label colours.
 
 MK.rig = (function () {
   var U = MK.util, SH = MK.shapes;
@@ -1319,9 +1443,12 @@ MK.rig = (function () {
   };
 
   // Expression text reaching a shape item, shape path, mask or mask path from any layer:
-  // thisComp.layer("Shape").content("Group 1").content("Path 1").path. With `self` it starts
-  // from thisLayer (for an expression on that same layer).
-  R.ref = function (p, self) {
+  // thisComp.layer("Shape").content("Group 1").content("Path 1").path. `from` true starts from
+  // thisLayer (for an expression on that same layer); a string starts from that expression
+  // variable, such as one holding a Layer Control's layer, which survives renaming the layer.
+  // Shape groups, paths and masks are still found by name: EffectCraft 0.14 doesn't rewrite
+  // expressions on a rename, so renaming one of them breaks the reference.
+  R.ref = function (p, from) {
     var s = "";
     for (var q = p, n = 0; q && !(q instanceof Layer) && n < 200; q = q.parentProperty, n++) {
       var m = q.matchName;
@@ -1330,7 +1457,7 @@ MK.rig = (function () {
       else if (m === "ADBE Mask Atom") s = ".mask(" + MK.expr.str(q.name) + ")" + s;
       else if (q.parentProperty && (q.parentProperty.matchName === "ADBE Vectors Group" || q.parentProperty.matchName === "ADBE Root Vectors Group")) s = ".content(" + MK.expr.str(q.name) + ")" + s;
     }
-    return (self ? "thisLayer" : "thisComp.layer(" + MK.expr.str(MK.sel.layerOf(p).name) + ")") + s;
+    return (from === true ? "thisLayer" : typeof from === "string" ? from : "thisComp.layer(" + MK.expr.str(MK.sel.layerOf(p).name) + ")") + s;
   };
 
   // Expression functions on 2D affine matrices [a, b, c, d, e, f] (x' = a x + b y + c,
@@ -1367,10 +1494,23 @@ MK.rig = (function () {
 
   // Expression code that sets mkX to the matrix from a path's own space to its layer's space,
   // through its enclosing shape groups at the current time (identity for masks). Needs R.LIB.
-  R.matrixCode = function (groups, self) {
+  // `from` as for R.ref.
+  R.matrixCode = function (groups, from) {
     var s = "var mkX = [1, 0, 0, 0, 1, 0];\n";
-    for (var i = 0; i < groups.length; i++) s += "mkX = mkMul(mkX, mkGroupM(" + R.ref(groups[i], self) + "));\n";
+    for (var i = 0; i < groups.length; i++) s += "mkX = mkMul(mkX, mkGroupM(" + R.ref(groups[i], from) + "));\n";
     return s;
+  };
+
+  // Expression text reading a Layer Control's layer (null when it names none) on the
+  // expression's own layer.
+  R.layerOf = function (controlName) {
+    return MK.controls.ref(controlName, "ADBE Layer Control") + ".value";
+  };
+  // A Layer Control called `name` on `layer` that names `target`, also when it already exists.
+  R.layerControl = function (layer, name, target) {
+    var e = MK.controls.layer(layer, name, target);
+    MK.controls.set(e, target);
+    return e;
   };
 
   // Points along a Shape value (its vertices and `steps` points per Bézier segment), through the
@@ -1392,20 +1532,57 @@ MK.rig = (function () {
     return U.map(pts, function (p) { return MK.mat.apply(mat, p); });
   };
 
+  // The bounds of the shapes under `root` (a shape layer or a shape group) in its own space at
+  // comp time t: paths, rectangles, ellipses and stars (their outer points), through nested
+  // groups, without strokes; hidden items left out. Null when there are none.
+  R.contentBounds = function (root, t) {
+    var pts = [];
+    SH.walk(root, function (it, groups) {
+      if (it.enabled === false) return false;
+      var m = SH.toLayerMatrix(groups, t), mn = it.matchName, i;
+      var v = function (name) { return it.property(name).valueAtTime(t, false); };
+      if (mn === SH.PATH_ITEM) pts = pts.concat(R.outline(v(R.SHAPE_PATH), m));
+      else if (mn === "ADBE Vector Shape - Rect" || mn === "ADBE Vector Shape - Ellipse") {
+        var rect = mn === "ADBE Vector Shape - Rect";
+        var c = v(rect ? "ADBE Vector Rect Position" : "ADBE Vector Ellipse Position"), s = v(rect ? "ADBE Vector Rect Size" : "ADBE Vector Ellipse Size");
+        var n = rect ? 4 : 64;
+        for (i = 0; i < n; i++) {
+          var u = rect ? [[-1, -1], [1, -1], [1, 1], [-1, 1]][i] : [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)];
+          pts.push(MK.mat.apply(m, [c[0] + u[0] * s[0] / 2, c[1] + u[1] * s[1] / 2]));
+        }
+      } else if (mn === "ADBE Vector Shape - Star") {
+        var sc = v("ADBE Vector Star Position"), k = Math.max(3, Math.round(v("ADBE Vector Star Points"))), rad = v("ADBE Vector Star Outer Radius"), rot = v("ADBE Vector Star Rotation");
+        for (i = 0; i < k; i++) {
+          var ang = (rot + 360 * i / k - 90) * Math.PI / 180;
+          pts.push(MK.mat.apply(m, [sc[0] + rad * Math.cos(ang), sc[1] + rad * Math.sin(ang)]));
+        }
+      }
+    });
+    return MK.space.bounds(pts);
+  };
+
+  // A layer's bounds in layer space at comp time t ({left, top, width, height...}). For shape
+  // layers, the exact outline of the contents: EffectCraft 0.14's sourceRectAtTime(t, false) adds
+  // 1 px on each side, rounds the width up and counts strokes. Other layers use sourceRectAtTime.
+  // shortcut: shape layers with a path operator (Repeater, Offset Paths, Trim...) keep
+  // sourceRectAtTime, since the outline ignores operators; walk them here if that matters.
+  R.layerBounds = function (layer, t) {
+    var root = SH.contents(layer), ops = false;
+    if (root) SH.walk(layer, function (it) { if (it.matchName.indexOf("ADBE Vector Filter") === 0) ops = true; });
+    var b = root && !ops ? R.contentBounds(layer, t) : null;
+    return b || MK.space.bounds(MK.space.rectCorners(layer, t, false));
+  };
+  // The four corners of bounds b, [x, y, 0]: top-left, top-right, bottom-right, bottom-left.
+  R.corners = function (b) {
+    return [[b.left, b.top, 0], [b.right, b.top, 0], [b.right, b.bottom, 0], [b.left, b.bottom, 0]];
+  };
+
   // A label colour (1-16) no layer of the comp uses yet, or the next one in turn when all are taken.
   R.freeLabel = function (comp) {
     var used = {};
     for (var i = 1; i <= comp.numLayers; i++) used[comp.layer(i).label] = true;
     for (var l = 1; l <= 16; l++) if (!used[l]) return l;
     return 1 + comp.numLayers % 16;
-  };
-
-  // True when another layer of the comp has this layer's name, so thisComp.layer(name) in an
-  // expression could find the wrong one.
-  R.nameClash = function (layer) {
-    var c = layer.containingComp;
-    for (var i = 1; i <= c.numLayers; i++) if (c.layer(i).name === layer.name && c.layer(i).index !== layer.index) return true;
-    return false;
   };
 
   // "Name", "Name 2"... a layer name the comp doesn't have yet.
@@ -1585,6 +1762,9 @@ MK.registerTool = function (def) {
   var tool = {
     id: d.id, name: d.name, category: d.category, description: d.description, icon: d.icon,
     options: d.options || [], run: d.run, needsComp: d.needsComp !== false, dot: d.dot || null,
+    // Alt-click takes what the tool wrote off the selection (MK.remove): tools whose whole
+    // result is marked expressions on the selected properties and "<Tool> – …" controls.
+    removable: !!d.removable,
     openOptions: d.openOptions || null, api: d.api || {},
     kind: widget ? "widget" : "tool", span: widget ? [Math.round(d.span[0]), Math.round(d.span[1])] : [1, 1], build: widget ? d.build : null
   };
@@ -1616,8 +1796,9 @@ MK.makeContext = function (tool) {
   return ctx;
 };
 
+// warnings: what ctx.warn collected (also appended to the message).
 MK.toResult = function (r, ctx) {
-  var out = { ok: true, message: "", created: ctx.created };
+  var out = { ok: true, message: "", created: ctx.created, warnings: ctx.warnings.slice() };
   if (r && typeof r === "object") {
     out.ok = r.ok !== false;
     out.message = r.message === undefined ? "" : String(r.message);
@@ -1629,20 +1810,23 @@ MK.toResult = function (r, ctx) {
 
 // Runs a tool or library item like a button click: saved options, overridden by `options`
 // (not saved). Problems come back as {ok: false, message} and are shown with alert unless
-// `quiet` is set. Never throws.
-MK.run = function (id, options, quiet) {
+// `quiet` is set, and so is the message of a run that worked with warnings (what it skipped).
+// Never throws.
+// how.setControls: the options dialog's OK, whose values also go into controls the selection
+// already has (MK.controls.ensure).
+MK.run = function (id, options, quiet, how) {
   var r;
   try {
     if (typeof id === "string" && id.indexOf("lib:") === 0) r = MK.library.run(id);
-    else r = MK.runTool(id, options);
+    else r = MK.runTool(id, options, how);
   } catch (e) {
     r = { ok: false, message: MK.util.errText(e), created: [] };
   }
-  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  if ((!r.ok || (r.warnings && r.warnings.length)) && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
   return r;
 };
 
-MK.runTool = function (id, options) {
+MK.runTool = function (id, options, how) {
   var tool = MK.tools[id];
   if (!tool) return { ok: false, message: "\"" + id + "\" isn't a tool in this version of Motion Kit (" + MK.version + ").", created: [] };
   var opts = MK.options.merged(tool, options);
@@ -1650,14 +1834,65 @@ MK.runTool = function (id, options) {
   if (tool.needsComp && !ctx.comp) return { ok: false, message: tool.name + ": open a composition first.", created: [] };
   var r;
   app.beginUndoGroup(MK.NAME + ": " + tool.name);
+  MK.controls.overwrite = !!(how && how.setControls);
   try {
     r = MK.toResult(tool.run(ctx, opts), ctx);
   } catch (e) {
     r = { ok: false, message: e instanceof MK.UserError ? tool.name + ": " + e.message : tool.name + " failed: " + MK.util.errText(e), created: ctx.created };
   } finally {
+    MK.controls.overwrite = false;
     app.endUndoGroup();
   }
   return r;
+};
+
+// Alt-click on a removable tool: takes the expressions tool `id` wrote off the selected
+// properties (with none selected, off every property of the selected layers), then deletes its
+// "<Tool> – …" controls from the layers where none of them is left. One undo step. Expressions
+// Motion Kit didn't write, or another tool wrote, stay.
+MK.remove = function (id, quiet) {
+  var r, tool = MK.tools[id];
+  try {
+    r = MK.removeTool(tool);
+  } catch (e) {
+    r = { ok: false, message: (tool ? tool.name : id) + ": removing failed: " + MK.util.errText(e), created: [] };
+  }
+  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  return r;
+};
+
+MK.removeTool = function (tool) {
+  var U = MK.util, X = MK.expr, ctx = MK.makeContext(tool);
+  var fail = function (msg) { return { ok: false, message: tool.name + ": " + msg, created: [] }; };
+  if (!ctx.comp) return fail("open a composition, then select the properties or layers to take " + tool.name + " off.");
+  var props = U.filter(ctx.props, function (p) { return p.canSetExpression && String(p.expression || "").split("\n")[0] === X.MARK + tool.id; });
+  if (!ctx.props.length) for (var l = 0; l < ctx.layers.length; l++) X.ofTool(ctx.layers[l], tool.id, props);
+  if (!props.length) {
+    if (ctx.props.length) return fail("the selected properties have no " + tool.name + " to remove.");
+    return fail(ctx.layers.length ? "the selected layers have no " + tool.name + " to remove." : "select the properties or layers to take " + tool.name + " off.");
+  }
+  var layers = {}, controls = 0, prefix = MK.controls.name(tool.name, "");
+  app.beginUndoGroup(MK.NAME + ": Remove " + tool.name);
+  try {
+    for (var i = 0; i < props.length; i++) {
+      props[i].expression = "";
+      var layer = MK.sel.layerOf(props[i]);
+      layers[layer.index] = layer;
+    }
+    for (var k in layers) {
+      if (!U.has(layers, k) || X.ofTool(layers[k], tool.id).length) continue;
+      var fx = MK.controls.fx(layers[k]);
+      for (var j = fx ? fx.numProperties : 0; j >= 1; j--) {
+        if (fx.property(j).name.indexOf(prefix) === 0) {
+          fx.property(j).remove();
+          controls++;
+        }
+      }
+    }
+  } finally {
+    app.endUndoGroup();
+  }
+  return { ok: true, message: tool.name + " removed from " + props.length + (props.length === 1 ? " property" : " properties") + (controls ? ", with its controls." : "."), created: [] };
 };
 
 // Runs tool `id`'s code inside another tool's or widget's run, with the same ctx (so one undo
@@ -2152,7 +2387,7 @@ MK.optionsDialog = (function () {
     if (!MK.options.has(tool)) return MK.run(id);
     var ctl = build(tool, MK.options.get(tool));
     ctl.win.show();
-    return ctl.action === "run" ? MK.run(id) : null;
+    return ctl.action === "run" ? MK.run(id, null, false, { setControls: true }) : null;
   }
 
   return { build: build, open: open };
@@ -2246,6 +2481,13 @@ MK.ui.startViews = function (host) {
 MK.ui.dist = function (a, b) { return Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])); };
 // Replaced by tests: how a button opens options, the Layout & Style dialog and the Add list.
 MK.ui.openOptions = function (id) { return MK.optionsDialog.open(id); };
+// "Bounce, Elastic and Loop": the tools Alt-click can remove, for messages.
+MK.ui.removableNames = function () {
+  var n = MK.util.map(MK.util.filter(MK.toolOrder, function (id) { return MK.tools[id].removable; }), function (id) { return MK.tools[id].name; });
+  return n.length > 1 ? n.slice(0, -1).join(", ") + " and " + n[n.length - 1] : n.join("");
+};
+// What Alt-click says on a tool or widget `name` that can't remove anything.
+MK.ui.altText = function (name) { return name + ": Alt-click removes what a tool added, and only " + MK.ui.removableNames() + " can do that."; };
 MK.ui.openLayoutDialog = function (panelIndex, tab) { return MK.layoutDialog.open(panelIndex, tab); };
 MK.ui.openAddList = function (panelIndex) {
   var D = MK.ui.buildAddList(panelIndex);
@@ -2762,7 +3004,8 @@ MK.ui.buildPanel = function (host, index, views) {
       else {
         cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
         cell.helpTip = look.name + " – " + look.description +
-          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + (P.editing ? "\nDrag to reorder." : "");
+          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") +
+          (look.tool && look.tool.removable ? "\nAlt-click removes it from the selected properties or layers." : "") + (P.editing ? "\nDrag to reorder." : "");
         cell.onDraw = paint;
         // What it shows only changes with the settings, which rebuild the panel.
         cell.mkLook = look;
@@ -2872,10 +3115,11 @@ MK.ui.buildPanel = function (host, index, views) {
 
   // The insertion slot (0..n) for a drop at a grid point, or -1 off the grid: before the item
   // under the pointer when it is in that item's left half, else after it. Over a hole, the
-  // nearest item decides.
+  // nearest item decides; over the "+" cell, the end.
   function slotAt(xy) {
-    var n = P.items().length, R = P.geo.rects, sp = P.sp;
+    var n = P.items().length, R = P.geo.rects, sp = P.sp, a = P.addCell ? R[n] : null;
     if (!n || xy[0] < -sp || xy[1] < -sp || xy[0] > P.geo.w + sp || xy[1] > P.geo.h + sp) return -1;
+    if (a && xy[0] >= a[0] && xy[0] < a[0] + a[2] && xy[1] >= a[1] && xy[1] < a[1] + a[3]) return n;
     var best = 0, bd = Infinity;
     for (var i = 0; i < n; i++) {
       var r = R[i], dx = Math.max(r[0] - xy[0], 0, xy[0] - r[0] - r[2]), dy = Math.max(r[1] - xy[1], 0, xy[1] - r[1] - r[3]);
@@ -2931,13 +3175,14 @@ MK.ui.buildPanel = function (host, index, views) {
       P.drag = null;
       return;
     }
-    if (t.mkRole === "part") {
+    // Alt-click on a widget part goes to the widget below, which explains as tools do.
+    if (t.mkRole === "part" && !e.altKey) {
       P.drag = { part: t, shift: opt };
       if (!opt && t.mkPress) t.mkPress(xy[0] - t.mkGX, xy[1] - t.mkGY);
       hold(!opt && !!t.mkDrag);
       return;
     }
-    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt };
+    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt, remove: !!e.altKey };
     hold(false);
   }
 
@@ -2994,18 +3239,23 @@ MK.ui.buildPanel = function (host, index, views) {
     }
     if (!xy || cellAt(xy) !== d.from) return;
     if (isWidget(d.from)) {
-      if (options && P.widgets[d.from].onShift) P.widgets[d.from].onShift();
+      var wd = P.widgets[d.from];
+      if (d.remove || e.altKey) MK.prompts.alert(MK.ui.altText(wd.tool.name));
+      else if (options && wd.onShift) wd.onShift();
       return;
     }
-    P.activate(d.from, options);
+    P.activate(d.from, options, d.remove || !!e.altKey);
   }
-  // Runs button i (or opens its options).
-  P.activate = function (i, options) {
+  // Runs button i, opens its options, or (remove: Alt-click) takes what it wrote off the
+  // selection. Alt-click on a tool that can't do that explains instead of running it.
+  P.activate = function (i, options, remove) {
     var item = P.items()[i];
     if (!item) return null;
-    var d = MK.describe(item.id, P.state.library), r = null;
+    var d = MK.describe(item.id, P.state.library), r = null, tool = MK.tools[item.id];
     if (d.missing) MK.prompts.alert("\"" + item.id + "\": " + d.description);
-    else if (options && MK.tools[item.id]) r = MK.ui.openOptions(item.id);
+    else if (remove && tool && tool.removable) r = MK.remove(item.id);
+    else if (remove) MK.prompts.alert(MK.ui.altText(d.name));
+    else if (options && tool) r = MK.ui.openOptions(item.id);
     else r = MK.run(item.id);
     P.refresh();
     return r;
@@ -3789,26 +4039,31 @@ MK.layoutDialog = (function () {
 })();
 
 // ---- src/tools/animate/bounce.js
-// Bounce: after the last keyframe the value carries on past it in the direction of travel,
-// falls back and hops again like a ball off a floor, each hop lower and shorter.
+// Bounce: after the last keyframe the value carries on past it in the direction of the last
+// change, falls back and hops again like a ball off a floor, each hop lower and shorter.
 //
-// Maths (per property, any number of dimensions): v is the velocity arriving at the last key,
-// s = |v| its speed and d = v / s the direction. Hop k leaves the final value at speed
-// s * A^k (A = Amplitude, the energy kept per bounce), lasts 2 s_k / g (g = Gravity) and is
-// s_k tau - g tau^2 / 2 high at tau seconds into it. Hops stop after Max Jumps or once a hop
-// would be lower than 0.001 of the keyframes' value range. Jump In/Out mirrors this before the
-// first key with the leaving velocity.
+// Sizes are relative to the keyframes, so one setting gives Position, Scale and Rotation the
+// same bounce. R is the keyframes' range (the farthest key from the first). The first hop rises
+// Amplitude % of R and lasts Hop Time seconds; each later hop keeps Bounciness % of the height
+// before it and is Hop Shortening % shorter (a real ball's hops shorten with the square root of
+// their height, about 29 % at Bounciness 50 %; the default 15 % keeps later hops longer). A hop
+// of height h and length d is 4 h tau (d - tau) / d^2 high at tau seconds into it. Hops stop after Max Jumps or once one would be lower than 0.001 R. Jump
+// In/Out mirrors this before the first key, against the first change.
 
 (function () {
   var NAME = "Bounce", C = MK.controls;
   var CTRL = {
-    amp: C.name(NAME, "Amplitude"), grav: C.name(NAME, "Gravity"),
+    amp: C.name(NAME, "Amplitude"), keep: C.name(NAME, "Bounciness"), time: C.name(NAME, "Hop Time"), shrink: C.name(NAME, "Hop Shortening"),
     jumps: C.name(NAME, "Max Jumps"), io: C.name(NAME, "Jump In/Out")
   };
+  // Controls of earlier versions, whose Amplitude meant the share of speed each hop kept.
+  var OLD = [C.name(NAME, "Gravity"), C.name(NAME, "Hop Gravity")];
 
   var BODY = [
-    "var mkA = Math.max(0, Math.min(1, " + C.ref(CTRL.amp) + ".value));",
-    "var mkG = Math.max(0.001, " + C.ref(CTRL.grav) + ".value);",
+    "var mkH = Math.max(0, " + C.ref(CTRL.amp) + ".value) / 100;",
+    "var mkK = Math.max(0, Math.min(95, " + C.ref(CTRL.keep) + ".value)) / 100;",
+    "var mkT = Math.max(0.01, " + C.ref(CTRL.time) + ".value);",
+    "var mkQ = 1 - Math.max(0, Math.min(90, " + C.ref(CTRL.shrink) + ".value)) / 100;",
     "var mkJ = Math.round(Math.max(1, Math.min(20, " + C.ref(CTRL.jumps) + ".value)));",
     "var mkIO = " + C.ref(CTRL.io, "ADBE Checkbox Control") + ".value != 0;",
     "function mkLen(v) {",
@@ -3817,15 +4072,15 @@ MK.layoutDialog = (function () {
     "  for (var i = 0; i < v.length; i++) s += v[i] * v[i];",
     "  return Math.sqrt(s);",
     "}",
-    "// Height of the hops tau seconds after the key, for arrival speed sp.",
-    "function mkHop(sp, tau, minH) {",
-    "  var s = sp * mkA;",
+    "// Height of the hops, as a share of the range, tau seconds after the key.",
+    "function mkHop(tau) {",
+    "  var h = mkH, d = mkT;",
     "  for (var k = 0; k < mkJ; k++) {",
-    "    if (!(s > 0) || s * s / (2 * mkG) < minH) return 0;",
-    "    var d = 2 * s / mkG;",
-    "    if (tau < d) return s * tau - 0.5 * mkG * tau * tau;",
+    "    if (h < 0.001) return 0;",
+    "    if (tau < d) return 4 * h * tau * (d - tau) / (d * d);",
     "    tau -= d;",
-    "    s *= mkA;",
+    "    h *= mkK;",
+    "    d *= mkQ;",
     "  }",
     "  return 0;",
     "}",
@@ -3834,20 +4089,33 @@ MK.layoutDialog = (function () {
     "  var mkT0 = key(1).time, mkT1 = key(numKeys).time, mkRange = 0;",
     "  for (var mkI = 2; mkI <= numKeys; mkI++) mkRange = Math.max(mkRange, mkLen(sub(key(mkI).value, key(1).value)));",
     "  if (time > mkT1) {",
-    "    var mkV = velocityAtTime(mkT1 - 0.002), mkS = mkLen(mkV);",
-    "    if (mkS > 0) mkOut = add(value, mul(mkV, mkHop(mkS, time - mkT1, 0.001 * mkRange) / mkS));",
+    "    var mkD = sub(key(numKeys).value, key(numKeys - 1).value), mkS = mkLen(mkD);",
+    "    if (mkS > 0) mkOut = add(value, mul(mkD, mkRange * mkHop(time - mkT1) / mkS));",
     "  } else if (mkIO && time < mkT0) {",
-    "    var mkV0 = velocityAtTime(mkT0 + 0.002), mkS0 = mkLen(mkV0);",
-    "    if (mkS0 > 0) mkOut = sub(value, mul(mkV0, mkHop(mkS0, mkT0 - time, 0.001 * mkRange) / mkS0));",
+    "    var mkD0 = sub(key(2).value, key(1).value), mkS0 = mkLen(mkD0);",
+    "    if (mkS0 > 0) mkOut = sub(value, mul(mkD0, mkRange * mkHop(mkT0 - time) / mkS0));",
     "  }",
     "}",
     "mkOut"
   ].join("\n");
 
+  // Brings a layer's other Bounce expressions up to this version's body, so all of them read
+  // the same controls. A layer with an earlier version's controls first loses them, so an old
+  // Amplitude (a share of speed then) isn't read with the new meaning.
+  function upgrade(layer) {
+    if (C.find(layer, OLD[0]) || C.find(layer, OLD[1])) {
+      var fx = C.fx(layer), prefix = C.name(NAME, "");
+      for (var j = fx.numProperties; j >= 1; j--) if (fx.property(j).name.indexOf(prefix) === 0) fx.property(j).remove();
+    }
+    var ps = MK.expr.ofTool(layer, "bounce");
+    for (var i = 0; i < ps.length; i++) MK.expr.set(ps[i], "bounce", BODY);
+  }
+
   MK.registerTool({
     id: "bounce",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "After the last keyframe the value hops past it and settles like a bouncing ball.",
     // Three shrinking hop arcs on a ground line (the ball).
     icon: [
@@ -3858,24 +4126,33 @@ MK.layoutDialog = (function () {
       { d: "O7 9.6 2.6", fill: "accent" }
     ],
     options: [
-      { key: "amplitude", label: "Amplitude", type: "number", "default": 0.7, min: 0, max: 1, help: "Energy kept per bounce" },
-      { key: "gravity", label: "Gravity", type: "number", "default": 5000, min: 1, max: 1000000, unit: "units/s²", help: "Higher gravity: shorter, quicker hops" },
+      { key: "hopHeight", label: "Amplitude", type: "number", "default": 20, min: 0, max: 200, unit: "% of the keyframes' change", help: "How high the first hop goes: 20 % of a change from 100 to 117 % rises 3.4 % past 117" },
+      { key: "bounciness", label: "Bounciness", type: "number", "default": 50, min: 0, max: 95, unit: "%", help: "How much of its height each hop keeps: lower settles sooner" },
+      { key: "hopTime", label: "Hop Time", type: "number", "default": 0.4, min: 0.02, max: 5, unit: "s", help: "Length of the first hop" },
+      { key: "hopShortening", label: "Hop Shortening", type: "number", "default": 15, min: 0, max: 90, unit: "%", help: "How much shorter each hop is than the one before: 0 keeps every hop as long as the first; about 30 matches a real ball at Bounciness 50 %" },
       { key: "maxJumps", label: "Max Jumps", type: "number", "default": 9, min: 1, max: 20, integer: true },
       { key: "jumpInOut", label: "Jump In/Out: also bounce before the first keyframe", type: "checkbox", "default": false }
     ],
     run: function (ctx, o) {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return MK.sel.isNumeric(p) && p.canSetExpression; });
-      if (!props.length) ctx.fail("select one or more properties with at least two keyframes (numbers, points or colours).");
+      // Cameras and lights can't hold effects, so they can't hold the controls.
+      var noFx = MK.util.filter(props, function (p) { return !C.fx(MK.sel.layerOf(p)); }).length;
+      props = MK.util.filter(props, function (p) { return !!C.fx(MK.sel.layerOf(p)); });
+      if (!props.length) ctx.fail(noFx ? "cameras and lights can't hold " + NAME + "'s controls: select properties of other layers." : "select one or more properties with at least two keyframes (numbers, points or colours).");
       var d = MK.expr.decide(ctx, props);
       for (var i = 0; i < d.apply.length; i++) {
         var layer = MK.sel.layerOf(d.apply[i]);
-        C.slider(layer, CTRL.amp, o.amplitude);
-        C.slider(layer, CTRL.grav, o.gravity);
+        upgrade(layer);
+        C.slider(layer, CTRL.amp, o.hopHeight);
+        C.slider(layer, CTRL.keep, o.bounciness);
+        C.slider(layer, CTRL.time, o.hopTime);
+        C.slider(layer, CTRL.shrink, o.hopShortening);
         C.slider(layer, CTRL.jumps, o.maxJumps);
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "bounce", BODY);
       }
-      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value"));
+      if (noFx) ctx.warn("Skipped " + noFx + " on cameras or lights, which can't hold controls.");
+      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length - noFx, d.skip.length, "two keyframes and a numeric value", 0, 0, ctx));
     }
   });
 })();
@@ -3929,9 +4206,13 @@ MK.layoutDialog = (function () {
 // paste them onto every selected keyframe of every selected property, until the clipboard is
 // cleared (Shift-click > Clear Clipboard). Eases pasted onto a property with another number of
 // ease dimensions reuse the first dimension's ease; values only paste onto the same value type.
+// Speeds are kept as multiples of their segment's average speed (MK.anim.avgSpeed) and pasted
+// as that multiple of the target segment's, so an ease fits any distance, direction and unit.
 
 (function () {
-  var NAME = "Ease Copy", KEY = "easeCopy", U = MK.util, BEZ = KeyframeInterpolationType.BEZIER;
+  var NAME = "Ease Copy", KEY = "easeCopy", U = MK.util, A = MK.anim, BEZ = KeyframeInterpolationType.BEZIER;
+  // Clipboard version 2 adds `ratio` to each ease; older clipboards paste their raw speeds.
+  var VERSION = 2;
 
   function clip() {
     var c = MK.settings.get(KEY, null);
@@ -3939,13 +4220,44 @@ MK.layoutDialog = (function () {
   }
   function describe(c) { return c ? "keyframe " + c.key + " of " + c.from : "empty"; }
 
+  // The segment on one side of key i ([a, b]), or null at the first key's in or the last's out.
+  function segment(p, i, inSide) {
+    if (inSide) return i > 1 ? [i - 1, i] : null;
+    return i < p.numKeys ? [i, i + 1] : null;
+  }
+  // Sets each ease's ratio: its speed over the segment's average speed in that dimension. A
+  // dimension that doesn't move takes the first ratio found; with none (no segment, or nothing
+  // moves) ratios are null and the raw speed is pasted.
+  function addRatios(eases, p, seg) {
+    var avg = seg && MK.sel.isNumeric(p) ? A.avgSpeed(p, seg[0], seg[1]) : [], first = null;
+    for (var d = 0; d < eases.length; d++) {
+      eases[d].ratio = d < avg.length && Math.abs(avg[d]) > 1e-9 ? eases[d].speed / avg[d] : null;
+      if (first === null) first = eases[d].ratio;
+    }
+    for (var e = 0; e < eases.length; e++) if (eases[e].ratio === null) eases[e].ratio = first;
+    return eases;
+  }
+  // The eases for one side of key i of p: each ratio times the target segment's average speed
+  // (one per ease dimension of p, reusing the first copied ease), or the raw speeds for a
+  // clipboard without ratios (older ones, Key Copy/Paste's Shift-Paste) or no segment there.
+  function scaled(eases, p, i, inSide, relative) {
+    var seg = segment(p, i, inSide);
+    if (!relative || !seg || !MK.sel.isNumeric(p)) return eases;
+    var avg = A.avgSpeed(p, seg[0], seg[1]);
+    return U.map(avg, function (v, d) {
+      var e = eases[d < eases.length ? d : 0];
+      return { speed: U.isNum(e.ratio) && U.isNum(v) ? e.ratio * v : e.speed, influence: e.influence };
+    });
+  }
+
   function copy(ctx, props) {
     var p = props[0], i = MK.sel.selectedKeys(p)[0], k = MK.keys.read(p, i);
     MK.settings.set(KEY, {
-      from: MK.sel.label(p), key: i, valueType: p.propertyValueType,
+      version: VERSION, from: MK.sel.label(p), key: i, valueType: p.propertyValueType,
       // Values of numbers, points and colours only: other types don't survive JSON.
       value: MK.sel.isNumeric(p) ? k.value : null,
-      inEase: k.inEase, outEase: k.outEase, inInterp: k.inInterp, outInterp: k.outInterp,
+      inEase: addRatios(k.inEase, p, segment(p, i, true)), outEase: addRatios(k.outEase, p, segment(p, i, false)),
+      inInterp: k.inInterp, outInterp: k.outInterp,
       expression: p.canSetExpression ? String(p.expression || "") : ""
     });
     var more = props.length > 1 ? " (keyframes were selected on " + props.length + " properties; this is the first)" : "";
@@ -3955,7 +4267,7 @@ MK.layoutDialog = (function () {
   // Pastes clipboard `c` (the copy() form) onto the selected keys of `props`. `name` starts the
   // message (default "Ease Copy"); the Key Copy/Paste widget's Shift-Paste uses this too.
   function paste(ctx, c, o, props, name) {
-    var keys = 0, wrongType = 0, noInterp = 0, exprs = 0;
+    var keys = 0, wrongType = 0, noInterp = 0, exprs = 0, rel = c.version >= VERSION;
     for (var n = 0; n < props.length; n++) {
       var p = props[n], sel = MK.sel.selectedKeys(p);
       var canEase = p.isInterpolationTypeValid(BEZ);
@@ -3966,7 +4278,7 @@ MK.layoutDialog = (function () {
       for (var j = 0; j < sel.length; j++) {
         var i = sel[j], inT = p.keyInInterpolationType(i), outT = p.keyOutInterpolationType(i);
         if (o.values && sameType) p.setValueAtKey(i, c.value);
-        if (o.easing && canEase) MK.keys.setEase(p, i, c.inEase, c.outEase);
+        if (o.easing && canEase) MK.keys.setEase(p, i, scaled(c.inEase, p, i, true, rel), scaled(c.outEase, p, i, false, rel));
         if (o.interp && canInterp) p.setInterpolationTypeAtKey(i, c.inInterp, c.outInterp);
         // setTemporalEaseAtKey makes both sides Bezier: without Interpolation, put the types back.
         else if (o.easing && canEase) p.setInterpolationTypeAtKey(i, inT, outT);
@@ -4322,7 +4634,7 @@ MK.layoutDialog = (function () {
         }
       }
       var msg = NAME + ": eased " + count + (count === 1 ? " keyframe" : " keyframes") + " on " + props.length + (props.length === 1 ? " property." : " properties.");
-      if (withKeys.length > props.length) msg += " Skipped " + (withKeys.length - props.length) + " that can't ease (one keyframe, or not a number).";
+      if (withKeys.length > props.length) ctx.warn("Skipped " + (withKeys.length - props.length) + " that can't ease (one keyframe, or not a number).");
       return ctx.done(msg);
     }
   });
@@ -4360,6 +4672,7 @@ MK.layoutDialog = (function () {
     id: "elastic",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "After the last keyframe the value overshoots and wobbles back like a spring.",
     // A zigzag spring off a wall (the weight at its end).
     icon: [
@@ -4375,17 +4688,22 @@ MK.layoutDialog = (function () {
     ],
     run: function (ctx, o) {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return MK.sel.isNumeric(p) && p.canSetExpression; });
-      if (!props.length) ctx.fail("select one or more properties with at least two keyframes (numbers, points or colours).");
-      var d = MK.expr.decide(ctx, props);
+      // Cameras and lights can't hold effects, so they can't hold the controls.
+      var noFx = MK.util.filter(props, function (p) { return !C.fx(MK.sel.layerOf(p)); }).length;
+      props = MK.util.filter(props, function (p) { return !!C.fx(MK.sel.layerOf(p)); });
+      if (!props.length) ctx.fail(noFx ? "cameras and lights can't hold " + NAME + "'s controls: select properties of other layers." : "select one or more properties with at least two keyframes (numbers, points or colours).");
+      var d = MK.expr.decide(ctx, props), linear = MK.keys.offerLinearArrival(d.apply, NAME), resting = 0;
       for (var i = 0; i < d.apply.length; i++) {
         var layer = MK.sel.layerOf(d.apply[i]);
+        if (MK.keys.atRest(d.apply[i], d.apply[i].numKeys, true)) resting++;
         C.slider(layer, CTRL.amp, o.amplitude);
         C.slider(layer, CTRL.freq, o.frequency);
         C.slider(layer, CTRL.decay, o.decay);
         C.checkbox(layer, CTRL.io, o.jumpInOut);
         MK.expr.set(d.apply[i], "elastic", BODY);
       }
-      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length, d.skip.length, "two keyframes and a numeric value"));
+      if (noFx) ctx.warn("Skipped " + noFx + " on cameras or lights, which can't hold controls.");
+      return ctx.done(MK.expr.report(NAME, d.apply.length, ctx.props.length - props.length - noFx, d.skip.length, "two keyframes and a numeric value", resting, linear, ctx));
     }
   });
 })();
@@ -4438,8 +4756,16 @@ MK.layoutDialog = (function () {
       for (var m = 0; m < grp.length; m++) if (win.moved || all[grp[m]].moved) remove.push(grp[m] + 1);
       if (win.moved) write.push(win);
     }
+    // A key roves only between two others, so removing its neighbours ends its roving: roving
+    // keys left in place are rewritten too (first, at their own time) and rove again.
+    for (var v = 0; remove.length && v < all.length; v++) {
+      if (all[v].roving && U.indexOf(remove, v + 1) < 0) {
+        remove.push(v + 1);
+        write.unshift(all[v]);
+      }
+    }
     K.remove(prop, remove);
-    for (var w = 0; w < write.length; w++) A.write(prop, write[w], write[w].to);
+    A.writeAll(prop, write, function (k) { return k.to; });
     return r;
   }
 
@@ -4521,6 +4847,7 @@ MK.layoutDialog = (function () {
     id: "loop",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "Repeats the keyframes before the first key, after the last, or both.",
     icon: [{ d: "A12 12 7 -60 210", w: 1.8 }, { d: HEAD, fill: "accent" }],
     options: [
@@ -4533,7 +4860,7 @@ MK.layoutDialog = (function () {
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return p.canSetExpression && (!numericOnly || MK.sel.isNumeric(p)); });
       if (!props.length) ctx.fail("select one or more properties with at least two keyframes" + (numericOnly ? " and a numeric value (for " + o.type + ")." : "."));
       var r = MK.expr.applyAll(ctx, props, "loop", body(o));
-      return ctx.done(MK.expr.report(NAME, r.applied.length, ctx.props.length - props.length, r.skipped.length, numericOnly ? "two keyframes and a numeric value" : "two keyframes"));
+      return ctx.done(MK.expr.report(NAME, r.applied.length, ctx.props.length - props.length, r.skipped.length, numericOnly ? "two keyframes and a numeric value" : "two keyframes", 0, 0, ctx));
     }
   });
 })();
@@ -4544,7 +4871,8 @@ MK.layoutDialog = (function () {
 // from the centre, seeded random, or selection order). Item k of the order is in step group
 // g = floor(k / group) ("group" items share each step); from the centre, k is the distance from
 // the middle item(s) instead, so both sides move alike. With G the last group, the span is
-// step * G frames and group g sits span * curve(g / G) frames, rounded to whole frames, after
+// step * G frames and group g sits span * curve(g / G) frames, rounded to whole frames (halves
+// away from zero, so a negative step mirrors the positive one), after
 // group 0 (linear: step * g). Group 0 takes the time of the first item in the order, or from
 // the centre of the middle item (the first of the two when the count is even). A layer's time
 // is its in-point; a keyframe item's time is its earliest selected keyframe.
@@ -4557,6 +4885,8 @@ MK.layoutDialog = (function () {
     easeOut: function (t) { return 1 - (1 - t) * (1 - t); },
     easeInOut: function (t) { return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); }
   };
+  // Rounds to a whole number of frames, halves away from zero (Math.round takes -0.5 to 0).
+  function whole(v) { return v < 0 ? -Math.round(-v) : Math.round(v); }
   var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", centre: "from the centre", random: "random", selection: "selection order" };
 
   // The step group of each of n items in order: floor(k / group), with k the distance from the
@@ -4644,7 +4974,7 @@ MK.layoutDialog = (function () {
       var n = list.length, g = groups(n, o.group, o.order === "centre"), last = Math.max.apply(null, g);
       var base = list[o.order === "centre" ? Math.floor((n - 1) / 2) : 0].time, curve = CURVES[o.curve], moved = 0;
       for (var i = 0; i < n; i++) {
-        var it = list[i], delta = base + (last ? Math.round(o.step * last * curve(g[i] / last)) : 0) * ctx.frame - it.time;
+        var it = list[i], delta = base + (last ? whole(o.step * last * curve(g[i] / last)) : 0) * ctx.frame - it.time;
         if (Math.abs(delta) < 1e-9) continue;
         if (keys) {
           for (var q = 0; q < it.props.length; q++) A.move(it.props[q], MK.sel.selectedKeys(it.props[q]), function (k) { return k.time + delta; });
@@ -4733,6 +5063,16 @@ MK.layoutDialog = (function () {
     else p.setValue(add(p.value));
   }
 
+  // True when the layer or any of its parents has a transform that changes over time (keys or
+  // expressions). Opacity doesn't pass to children, so it doesn't count.
+  function movesInChain(layer) {
+    for (var l = layer, n = 0; l && n < 200; l = l.parent, n++) {
+      var tr = l.property("ADBE Transform Group");
+      for (var i = 1; i <= tr.numProperties; i++) if (tr.property(i).matchName !== "ADBE Opacity" && tr.property(i).isTimeVarying) return true;
+    }
+    return false;
+  }
+
   // Moves a layer by d in its comp, keys included (X and Y Position when separated).
   function shiftLayer(layer, d) {
     var tr = layer.transform, pos = tr.position;
@@ -4779,7 +5119,7 @@ MK.layoutDialog = (function () {
         var par = layers[i].parent;
         if (par && !ids[par.id]) {
           layers[i].parent = null;
-          ctx.warn(layers[i].name + " was parented to " + par.name + ", which isn't selected; it was unparented first" + (par.transform.position.numKeys || par.transform.rotation.numKeys || par.transform.scale.numKeys ? " and won't follow that parent's animation." : "."));
+          ctx.warn(layers[i].name + " was parented to " + par.name + ", which isn't selected; it was unparented first" + (movesInChain(par) ? " and won't follow that parent's animation." : "."));
         }
       }
 
@@ -4835,7 +5175,8 @@ MK.layoutDialog = (function () {
 // from comp id to copy, filled before recursing, also stops cycles), and points the copies' layers
 // at the copies with AVLayer.replaceSource. Copies are named "<name> 2", "<name> 3"... or
 // "<name><suffix>". Every expression in the copies that names a duplicated comp with
-// comp("<old name>") is rewritten to the copy's name.
+// comp("<old name>") is rewritten to the copy's name. Without Deep (or Layer.replaceSource) a
+// copy still uses the original precomps, so only its own name is rewritten in it.
 
 (function () {
   var NAME = "Duplicate Comp", U = MK.util;
@@ -4862,6 +5203,11 @@ MK.layoutDialog = (function () {
       var cmds = app.run("command.list", {});
       for (var i = 0; i < cmds.length; i++) if (cmds[i].id === "layer.replaceSource") return true;
     } catch (e) {}
+    return false;
+  }
+
+  function hasPrecomp(comp) {
+    for (var i = 1; i <= comp.numLayers; i++) if (comp.layer(i) instanceof AVLayer && comp.layer(i).source instanceof CompItem) return true;
     return false;
   }
 
@@ -4911,7 +5257,7 @@ MK.layoutDialog = (function () {
       if (!roots.length && ctx.comp) roots = [ctx.comp];
       if (!roots.length) ctx.fail("select one or more comps in the Project panel, or open a comp.");
       var deep = o.deep && canReplaceSource();
-      if (o.deep && !deep) ctx.warn("Nested precomps weren't duplicated: this EffectCraft has no Layer.replaceSource, so the copies still use the original precomps.");
+      if (o.deep && !deep && U.filter(roots, hasPrecomp).length) ctx.warn("Nested precomps weren't duplicated: this EffectCraft has no Layer.replaceSource, so the copies still use the original precomps.");
 
       var copies = {}, list = [], i;
       function dup(c) {
@@ -4938,7 +5284,7 @@ MK.layoutDialog = (function () {
       var rewritten = 0;
       for (i = 0; i < list.length; i++) {
         var d = list[i].to;
-        for (var j = 1; j <= d.numLayers; j++) rewritten += rewrite(d.layer(j), renames);
+        for (var j = 1; j <= d.numLayers; j++) rewritten += rewrite(d.layer(j), deep ? renames : [renames[i]]);
         ctx.created.push(d);
       }
       var nested = list.length - roots.length;
@@ -4955,6 +5301,8 @@ MK.layoutDialog = (function () {
 // are render settings too, and Loop is the GIF output module's loop flag, which the scripting
 // OutputModule doesn't expose, so it goes through app.run("renderQueue.setOutputModule").
 // Other queued items are switched off while rendering and switched back on after.
+// A GIF never replaces another: when "<comp>.gif" is taken (a file there, or the output of
+// another render queue item), the next free "<comp> 2.gif", "<comp> 3.gif"... is used.
 
 (function () {
   var NAME = "GIF Export", U = MK.util;
@@ -4968,6 +5316,22 @@ MK.layoutDialog = (function () {
     if (app.project.file) return app.project.file.path;
     if (Folder.desktop) return Folder.desktop.fsName;
     return "";
+  }
+
+  // True when `path` is a file, or the output of a render queue item other than number `self`
+  // (done or waiting, this run's earlier items too).
+  // shortcut: EffectCraft lets a script see files only inside the saved project's folder
+  // (elsewhere File.exists is false), so a GIF left elsewhere by an earlier session can still be
+  // replaced; check the disk there too once scripts may read it.
+  function taken(rq, path, self) {
+    if (new File(path).exists) return true;
+    for (var i = 1; i <= rq.numItems; i++) {
+      for (var m = 1; i !== self && m <= rq.item(i).numOutputModules; m++) {
+        var f = rq.item(i).outputModule(m).file;
+        if (f && f.fsName === path) return true;
+      }
+    }
+    return false;
   }
 
   // Runs a settings change; EffectCraft refuses one that changes nothing, which is fine here.
@@ -5002,18 +5366,18 @@ MK.layoutDialog = (function () {
       var comps = U.filter(app.project.selection, function (it) { return it instanceof CompItem; });
       if (!comps.length && ctx.comp) comps = [ctx.comp];
       if (!comps.length) ctx.fail("select one or more comps in the Project panel, or open a comp.");
-      var rq = app.project.renderQueue, folder = folderOf(o), items = [], used = {}, i;
+      var rq = app.project.renderQueue, folder = folderOf(o), items = [], i;
       for (i = 0; i < comps.length; i++) {
         var c = comps[i];
-        var base = String(c.name).replace(/[\\\/:*?"<>|]/g, "_"), file = base, n = 2;
-        while (U.has(used, file)) file = base + " " + n++;
-        used[file] = true;
+        var base = (folder ? folder + "/" : "") + String(c.name).replace(/[\\\/:*?"<>|]/g, "_"), n = 2;
         var it = rq.items.add(c);
         var idx = rq.numItems;
         it.outputModule(1).applyTemplate("GIF");
         change(function () { app.run("renderQueue.setOutputModule", { index: idx, loop: o.loop === "forever" }); });
         change(function () { it.setSettings({ resolution: o.scale / 100, timeSpan: o.workArea ? "workArea" : "comp", frameRate: o.fps > 0 ? o.fps : null }); });
-        it.outputModule(1).file = new File((folder ? folder + "/" : "") + file + ".gif");
+        // Read back through the output module: a bare name resolves to EffectCraft's default folder.
+        it.outputModule(1).file = new File(base + ".gif");
+        while (taken(rq, it.outputModule(1).file.fsName, idx)) it.outputModule(1).file = new File(base + " " + n++ + ".gif");
         items.push(it);
       }
 
@@ -5142,8 +5506,11 @@ MK.layoutDialog = (function () {
     }
 
     var miss = lost(pl), plName = pl.name;
-    if (o.original === "delete") pl.remove();
-    else pl.enabled = false;
+    if (o.original === "delete") {
+      // Layers parented to the precomp layer follow the null instead: same layer space, no jump.
+      for (i = 1; i <= comp.numLayers; i++) if (comp.layer(i).parent && comp.layer(i).parent.id === pl.id) comp.layer(i).setParentWithJump(nul);
+      pl.remove();
+    } else pl.enabled = false;
     ctx.created.push(nul);
     for (i = 0; i < copied.length; i++) ctx.created.push(copied[i]);
     if (miss.length) ctx.warn("Not carried over from \"" + plName + "\": " + miss.join(", ") + ".");
@@ -5223,7 +5590,8 @@ MK.layoutDialog = (function () {
 
   var SOLVE = [
     "function mkF(v, d) { v = Number(v); return isFinite(v) ? v : d; }",
-    "function mkPos(L) { var p = L.toComp(L.anchorPoint.value); return [mkF(p[0], 0), mkF(p[1], 0)]; }",
+    // Cameras and lights have no anchor point, so mkPos uses their origin.
+    "function mkPos(L) { var p = L.toComp(L.anchorPoint ? L.anchorPoint.value : [0, 0, 0]); return [mkF(p[0], 0), mkF(p[1], 0)]; }",
     "function mkClamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }",
     "function mkSolve(mkK) {",
     "  var mkRootL = " + k("Root", LC) + ", mkCtrlL = " + k("Controller", LC) + ";",
@@ -5437,9 +5805,10 @@ MK.layoutDialog = (function () {
 
 // ---- src/tools/rig/moveAnchor.js
 // Move Anchor Point: moves each selected layer's anchor point to a corner, edge midpoint or the
-// centre of its sourceRectAtTime(currentTime, false) (or of its masks' bounds), without moving
-// the layer. With shape groups selected, it moves each group's transform anchor within the
-// group's own contents instead.
+// centre of its bounds at the current time (MK.rig.layerBounds: a shape layer's exact contents,
+// else sourceRectAtTime(currentTime, false); or its masks' bounds), without moving the layer.
+// With shape groups selected, it moves each group's transform anchor within the group's own
+// contents instead.
 //
 // Maths: Position = where the anchor point lands in the parent's space, so a new anchor A' needs
 // Position' = layerToParent(A') under the old transform, at the same time. Every anchor key (or
@@ -5447,6 +5816,9 @@ MK.layoutDialog = (function () {
 // becomes layerToParent(A(t) + D, t) at its own time t, evaluated before anything is written.
 // layerToParent is toWorld then the parent's fromWorld (EffectCraft's own, so rotation, scale,
 // parenting and 3D count); for groups it is the group matrix (MK.shapes.groupMatrix).
+// When scale, rotation or skew is animated, Position' - Position turns and scales with them, so
+// Position gets a key at every key time of Position, Anchor Point, Scale and Rotation (Skew for
+// groups) and at the current time: exact there, close between them.
 
 (function () {
   var NAME = "Move Anchor Point", ID = "moveAnchor";
@@ -5456,32 +5828,64 @@ MK.layoutDialog = (function () {
   var FRACTION = { tl: [0, 0], t: [0.5, 0], tr: [1, 0], l: [0, 0.5], c: [0.5, 0.5], r: [1, 0.5], bl: [0, 1], b: [0.5, 1], br: [1, 1] };
   var LABEL = { tl: "top left", t: "top", tr: "top right", l: "left", c: "centre", r: "right", bl: "bottom left", b: "bottom", br: "bottom right" };
 
+  // Transform properties whose animation turns or scales the anchor's offset in Position space.
+  var LAYER_TURNS = ["ADBE Scale", "ADBE Orientation", "ADBE Rotate X", "ADBE Rotate Y", "ADBE Rotate Z"];
+  var GROUP_TURNS = ["ADBE Vector Scale", "ADBE Vector Rotation", "ADBE Vector Skew", "ADBE Vector Skew Axis"];
+
   function keyTimes(p) {
     var out = [];
     for (var i = 1; i <= p.numKeys; i++) out.push(p.keyTime(i));
     return out;
   }
 
+  function hasExpr(p) { return !!p.expression && p.expressionEnabled !== false; }
+
+  // The properties `names` of transform group `tr` that change over time (keys or an expression).
+  function animated(tr, names) {
+    return U.filter(U.map(names, function (n) { return tr.property(n); }), function (p) { return p && (p.numKeys > 0 || hasExpr(p)); });
+  }
+
+  // The 1-based index of p's key at time tk, or 0.
+  function keyAt(p, tk) {
+    for (var i = 1; i <= p.numKeys; i++) if (Math.abs(p.keyTime(i) - tk) < 1e-4) return i;
+    return 0;
+  }
+
   // Plans the move of anchor property `ap` to `target` (2D, in the anchor's own space) with
   // position property `pp`; toParent(p, t) maps an anchor-space point to position space at
-  // time t with the current values. Returns a function that writes the result.
-  function plan(ap, pp, target, t, dims, toParent) {
+  // time t with the current values; `turns` are the animated properties that change that map's
+  // rotation or scale. Returns {write: function that writes the result, keyed: true when
+  // Position got keys for `turns`}.
+  function plan(ap, pp, target, t, dims, toParent, turns) {
     var a0 = ap.valueAtTime(t, false);
     var dx = target[0] - a0[0], dy = target[1] - a0[1];
     function fit(v) { return dims === 3 ? [v[0], v[1], v[2] || 0] : [v[0], v[1]]; }
     function shifted(a) { return fit([a[0] + dx, a[1] + dy, a[2] || 0]); }
     var anchors = ap.numKeys ? U.map(keyTimes(ap), function (tk, i) { return shifted(ap.keyValue(i + 1)); }) : [shifted(a0)];
-    var positions = U.map(pp.numKeys ? keyTimes(pp) : [t], function (tk) { return fit(toParent(shifted(ap.valueAtTime(tk, false)), tk)); });
-    return function () {
-      var i;
-      if (ap.numKeys) for (i = 0; i < anchors.length; i++) ap.setValueAtKey(i + 1, anchors[i]);
-      else ap.setValue(anchors[0]);
-      if (pp.numKeys) for (i = 0; i < positions.length; i++) pp.setValueAtKey(i + 1, positions[i]);
-      else pp.setValue(positions[0]);
+    var times = pp.numKeys ? keyTimes(pp) : [t];
+    if (turns.length) {
+      var all = keyTimes(pp).concat(keyTimes(ap), [t]);
+      for (var j = 0; j < turns.length; j++) all = all.concat(keyTimes(turns[j]));
+      all.sort(function (x, y) { return x - y; });
+      times = U.filter(all, function (tk, i) { return i === 0 || tk - all[i - 1] > 1e-4; });
+    }
+    var positions = U.map(times, function (tk) { return fit(toParent(shifted(ap.valueAtTime(tk, false)), tk)); });
+    var keys = U.map(times, function (tk) { return keyAt(pp, tk); });
+    return {
+      keyed: turns.length > 0,
+      write: function () {
+        var i;
+        if (ap.numKeys) for (i = 0; i < anchors.length; i++) ap.setValueAtKey(i + 1, anchors[i]);
+        else ap.setValue(anchors[0]);
+        if (!pp.numKeys && !turns.length) return pp.setValue(positions[0]);
+        // Existing keys first, by index, before new keys shift the indices.
+        for (i = 0; i < times.length; i++) if (keys[i]) pp.setValueAtKey(keys[i], positions[i]);
+        for (i = 0; i < times.length; i++) if (!keys[i]) pp.setValueAtTime(times[i], positions[i]);
+      }
     };
   }
 
-  // The layer-space bounds to use: the masks' outlines with "Include masks", else the rectangle.
+  // The layer-space bounds to use: the masks' outlines with "Include masks", else the layer's.
   function layerBounds(L, t, masks) {
     var mp = masks ? L.property("ADBE Mask Parade") : null;
     if (mp && mp.numProperties) {
@@ -5489,39 +5893,10 @@ MK.layoutDialog = (function () {
       for (var i = 1; i <= mp.numProperties; i++) pts = pts.concat(R.outline(mp.property(i).property("ADBE Mask Shape").valueAtTime(t, false)));
       if (pts.length) return S.bounds(pts);
     }
-    return S.bounds(S.rectCorners(L, t, false));
-  }
-
-  // A shape group's contents' bounds in its own space: paths, rectangles, ellipses and stars
-  // (their outer points), through any nested groups.
-  function groupBounds(g, t) {
-    var pts = [];
-    SH.walk(g, function (it, groups) {
-      var m = SH.toLayerMatrix(groups, t), mn = it.matchName, i;
-      var v = function (name) { return it.property(name).valueAtTime(t, false); };
-      if (mn === SH.PATH_ITEM) pts = pts.concat(R.outline(v(R.SHAPE_PATH), m));
-      else if (mn === "ADBE Vector Shape - Rect" || mn === "ADBE Vector Shape - Ellipse") {
-        var rect = mn === "ADBE Vector Shape - Rect";
-        var c = v(rect ? "ADBE Vector Rect Position" : "ADBE Vector Ellipse Position"), s = v(rect ? "ADBE Vector Rect Size" : "ADBE Vector Ellipse Size");
-        var n = rect ? 4 : 64;
-        for (i = 0; i < n; i++) {
-          var u = rect ? [[-1, -1], [1, -1], [1, 1], [-1, 1]][i] : [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)];
-          pts.push(MK.mat.apply(m, [c[0] + u[0] * s[0] / 2, c[1] + u[1] * s[1] / 2]));
-        }
-      } else if (mn === "ADBE Vector Shape - Star") {
-        var sc = v("ADBE Vector Star Position"), k = Math.max(3, Math.round(v("ADBE Vector Star Points"))), rad = v("ADBE Vector Star Outer Radius"), rot = v("ADBE Vector Star Rotation");
-        for (i = 0; i < k; i++) {
-          var ang = (rot + 360 * i / k - 90) * Math.PI / 180;
-          pts.push(MK.mat.apply(m, [sc[0] + rad * Math.cos(ang), sc[1] + rad * Math.sin(ang)]));
-        }
-      }
-    });
-    return S.bounds(pts);
+    return R.layerBounds(L, t);
   }
 
   function at(b, f) { return [b.left + b.width * f[0], b.top + b.height * f[1]]; }
-
-  function hasExpr(p) { return !!p.expression && p.expressionEnabled !== false; }
 
   MK.registerTool({
     id: ID,
@@ -5572,12 +5947,15 @@ MK.layoutDialog = (function () {
         for (i = 0; i < groups.length; i++) {
           var g = groups[i], tr = SH.groupTransform(g);
           var gap = tr.property("ADBE Vector Anchor"), gpp = tr.property("ADBE Vector Position");
-          var gb = groupBounds(g, t);
+          var gb = R.contentBounds(g, t);
           if (hasExpr(gap) || hasExpr(gpp)) skipped.push("\"" + g.name + "\" (its anchor or position has an expression)");
           else if (!gb) skipped.push("\"" + g.name + "\" (it has no shapes)");
-          else todo.push(plan(gap, gpp, at(gb, f), t, 2, (function (grp) {
-            return function (p, tk) { return MK.mat.apply(SH.groupMatrix(grp, tk), p); };
-          })(g)));
+          else {
+            todo.push(plan(gap, gpp, at(gb, f), t, 2, (function (grp) {
+              return function (p, tk) { return MK.mat.apply(SH.groupMatrix(grp, tk), p); };
+            })(g), animated(tr, GROUP_TURNS)));
+            todo[todo.length - 1].name = "\"" + g.name + "\"";
+          }
         }
       } else {
         for (i = 0; i < ctx.layers.length; i++) {
@@ -5585,18 +5963,29 @@ MK.layoutDialog = (function () {
           if (!L.sourceRectAtTime) skipped.push(L.name + " (it has no size)");
           else if (hasExpr(ap) || hasExpr(pp)) skipped.push(L.name + " (its anchor point or position has an expression)");
           else if (pp.dimensionsSeparated) skipped.push(L.name + " (its position has separate dimensions)");
-          else todo.push(S.probe(L, function (ev) {
-            return plan(ap, pp, at(layerBounds(L, t, o.masks), f), t, L.threeDLayer ? 3 : 2, function (p, tk) {
-              return ev("var p = L.toWorld([" + p[0] + "," + p[1] + "," + (p[2] || 0) + "]); L.hasParent ? L.parent.fromWorld(p) : p", tk);
-            });
-          }));
+          else {
+            todo.push(S.probe(L, function (ev) {
+              return plan(ap, pp, at(layerBounds(L, t, o.masks), f), t, L.threeDLayer ? 3 : 2, function (p, tk) {
+                return ev("var p = L.toWorld([" + p[0] + "," + p[1] + "," + (p[2] || 0) + "]); L.hasParent ? L.parent.fromWorld(p) : p", tk);
+              }, animated(L.transform, LAYER_TURNS));
+            }));
+            todo[todo.length - 1].name = L.name;
+          }
         }
       }
-      for (i = 0; i < todo.length; i++) todo[i]();
+      var keyed = [];
+      for (i = 0; i < todo.length; i++) {
+        todo[i].write();
+        if (todo[i].keyed) keyed.push(todo[i].name);
+      }
       var what = groups.length ? (todo.length === 1 ? " group" : " groups") : (todo.length === 1 ? " layer" : " layers");
       var msg = "Moved the anchor point of " + todo.length + what + " to the " + LABEL[o.point] + ".";
-      if (skipped.length) msg += " Skipped " + skipped.join(", ") + ".";
+      if (keyed.length) {
+        msg += " " + (keyed.length === 1 ? keyed[0] + " has" : keyed.join(", ") + " have") + " animated scale or rotation, so Position now has keyframes at those" +
+          " keyframes and at the current time. It stays put on them but can drift slightly between them.";
+      }
       if (!todo.length) ctx.fail("nothing to move. Skipped " + skipped.join(", ") + ".");
+      if (skipped.length) ctx.warn("Skipped " + skipped.join(", ") + ".");
       return ctx.done(msg);
     }
   });
@@ -5614,18 +6003,25 @@ MK.layoutDialog = (function () {
 // path space -> comp -> null -> back, so rotating or scaling a null turns and scales its handles.
 // "Nulls follow points" goes the other way: each null's position reads its vertex from the
 // (possibly animated) path, through mkX and toComp, into the null's parent space.
+// Layer Controls link the layers, so renaming a null or the path's layer keeps the rig: with
+// "Points follow nulls" the path's layer gets one per null, named after the null; with "Nulls
+// follow points" each null gets one naming the path's layer. Shape groups and masks are still
+// found by name.
 
 (function () {
   var NAME = "Nulls ↔ Points", ID = "nullsPoints";
-  var U = MK.util, S = MK.space, R = MK.rig;
+  var U = MK.util, S = MK.space, R = MK.rig, C = MK.controls;
+  var LC = "ADBE Layer Control", PATH_LAYER = C.name(NAME, "Path Layer");
 
   function list(a) { return "[" + U.map(a, MK.expr.str).join(", ") + "]"; }
 
-  // The path expression for "Points follow nulls".
-  function pathExpr(pe, names, tangents) {
+  // The path expression for "Points follow nulls": `ctrls` are the names of the Layer Controls on
+  // the path's layer that name the nulls, in vertex order.
+  function pathExpr(pe, ctrls, tangents) {
     return [
       R.LIB,
-      "var mkNames = " + list(names) + ";",
+      "function mkNullOf(n) { try { return effect(n)(" + JSON.stringify(C.PARAM[LC]) + ").value; } catch (mkE) { return null; } }",
+      "var mkNames = " + list(ctrls) + ";",
       "var mkTan = " + (tangents ? "true" : "false") + ";",
       "var mkV = mkPathOf(value), mkP = mkV.points(), mkIn = mkV.inTangents(), mkOutT = mkV.outTangents();",
       "var mkPts = [], mkI = [], mkO = [], mkToItem = [1, 0, 0, 0, 1, 0], mkIC = [1, 0, 0, 0, 1, 0];",
@@ -5639,7 +6035,8 @@ MK.layoutDialog = (function () {
       "  var mkQ = mkP[mkK], mkA = mkIn[mkK] || [0, 0], mkB = mkOutT[mkK] || [0, 0];",
       "  if (mkK < mkNames.length) {",
       "    try {",
-      "      var mkN = thisComp.layer(mkNames[mkK]);",
+      "      var mkN = mkNullOf(mkNames[mkK]);",
+      "      if (!mkN) throw new Error(\"no null\");",
       "      var mkC = mkApply(mkToItem, fromComp(mkN.toComp(mkN.anchorPoint.value)));",
       "      if (mkFinite(mkC)) mkQ = mkC;",
       "      if (mkTan) {",
@@ -5664,8 +6061,9 @@ MK.layoutDialog = (function () {
       R.LIB,
       "var mkOut = value;",
       "try {",
-      "  var mkL = thisComp.layer(" + MK.expr.str(pe.layer.name) + ");",
-      R.matrixCode(pe.groups, false) + "  var mkP = " + R.ref(pe.prop) + ".points();",
+      "  var mkL = " + R.layerOf(PATH_LAYER) + ";",
+      "  if (!mkL) throw new Error(\"no path layer\");",
+      R.matrixCode(pe.groups, "mkL") + "  var mkP = " + R.ref(pe.prop, "mkL") + ".points();",
       "  if (mkP.length > " + k + ") {",
       "    var mkC = mkL.toComp(mkApply(mkX, mkP[" + k + "]));",
       "    if (hasParent) mkC = parent.fromComp(mkC);",
@@ -5704,12 +6102,13 @@ MK.layoutDialog = (function () {
         kept = d.skip.length;
         paths = U.filter(paths, function (pe) { return U.indexOf(d.apply, pe.prop) >= 0; });
       }
-      var made = 0;
+      var made = 0, held = [];
       for (i = 0; i < paths.length; i++) {
         var pe = paths[i], shape = pe.prop.valueAtTime(t, false);
+        if (follow && animatedPath(pe) && U.indexOf(held, pe.layer.name) < 0) held.push(pe.layer.name);
         var m = pathToLayer(pe, t);
         var at = S.toCompPoints(pe.layer, U.map(shape.vertices, function (v) { return MK.mat.apply(m, v); }), t);
-        var nulls = [], names = [], num = 1;
+        var nulls = [], num = 1;
         for (k = 0; k < at.length; k++) {
           while (ctx.comp.layers.byName(pe.layer.name + " Point " + num)) num++;
           var n = ctx.comp.layers.addNull();
@@ -5717,7 +6116,6 @@ MK.layoutDialog = (function () {
           n.moveBefore(pe.layer);
           n.transform.position.setValue([at[k][0], at[k][1]]);
           nulls.push(n);
-          names.push(n.name);
           ctx.created.push(n);
         }
         if (o.parent) {
@@ -5729,10 +6127,18 @@ MK.layoutDialog = (function () {
           for (k = 0; k < nulls.length; k++) nulls[k].parent = pn;
           ctx.created.push(pn);
         }
-        if (follow) MK.expr.set(pe.prop, ID, pathExpr(pe, names, o.tangents));
-        else {
-          for (k = 0; k < nulls.length; k++) MK.expr.set(nulls[k].transform.position, ID, nullExpr(pe, k));
-          if (R.nameClash(pe.layer)) ctx.warn("Another layer is also named \"" + pe.layer.name + "\": rename one, or the nulls may follow the wrong path.");
+        if (follow) {
+          var ctrls = U.map(nulls, function (nl) {
+            var cn = U.uniqueName(C.name(NAME, nl.name), function (x) { return !!C.find(pe.layer, x); });
+            R.layerControl(pe.layer, cn, nl);
+            return cn;
+          });
+          MK.expr.set(pe.prop, ID, pathExpr(pe, ctrls, o.tangents));
+        } else {
+          for (k = 0; k < nulls.length; k++) {
+            R.layerControl(nulls[k], PATH_LAYER, pe.layer);
+            MK.expr.set(nulls[k].transform.position, ID, nullExpr(pe, k));
+          }
         }
         made += nulls.length;
       }
@@ -5740,9 +6146,33 @@ MK.layoutDialog = (function () {
         (follow ? "; the path follows them." : "; they follow the path.");
       if (empty.length) msg += " Skipped " + empty.length + " empty " + (empty.length === 1 ? "path." : "paths.");
       if (kept) msg += " Kept " + kept + " path" + (kept === 1 ? "" : "s") + " with an existing expression.";
+      if (held.length) {
+        msg += " The nulls now place the path" + (held.length === 1 ? "" : "s") + ", so the animation of " + held.join(", ") +
+          " (transform, shape groups or path keyframes) no longer moves " + (held.length === 1 ? "it." : "them.");
+      }
       return ctx.done(msg);
     }
   });
+
+  // True when a property under `group` other than opacity is keyed or has an expression.
+  function animatedIn(group) {
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) {
+        if (animatedIn(p)) return true;
+      } else if (p.matchName.indexOf("Opacity") < 0 && (p.numKeys > 0 || (p.expression && p.expressionEnabled !== false))) return true;
+    }
+    return false;
+  }
+
+  // True when something moves the path in comp space over time: its keyframes, its shape groups'
+  // transforms, or the transform of its layer or of a parent of that layer.
+  function animatedPath(pe) {
+    if (pe.prop.numKeys) return true;
+    for (var i = 0; i < pe.groups.length; i++) if (animatedIn(MK.shapes.groupTransform(pe.groups[i]))) return true;
+    for (var l = pe.layer, n = 0; l && n < 200; l = l.parent, n++) if (animatedIn(l.transform)) return true;
+    return false;
+  }
 
   // Path space -> layer space: the enclosing shape groups at time t (identity for masks).
   function pathToLayer(pe, t) { return pe.mask ? MK.mat.identity() : MK.shapes.toLayerMatrix(pe.groups, t); }
@@ -5751,23 +6181,25 @@ MK.layoutDialog = (function () {
 // ---- src/tools/rig/parentNull.js
 // Add Parent Null: a null at the selected layers' combined bounds (or their average position, or
 // the top layer's position) at the current time, and the layers parented to it without moving.
-// "Null per layer" makes one null per layer at its anchor point instead. Nulls go above the
-// top-most layer they parent and are 3D when all those layers are 3D (positions then use world
-// space, so the z depth is kept).
+// "Null per layer" makes one null per layer at its anchor point instead, and with re-parenting
+// on that null takes over the layer's old parent. Nulls go above the top-most layer they parent
+// and are 3D when all those layers are 3D, cameras and lights included (positions then use world
+// space, so the z depth is kept). With one null, a layer whose parent chain has another selected
+// layer keeps its parent: it already follows the null through that layer.
 
 (function () {
   var NAME = "Add Parent Null";
-  var U = MK.util, S = MK.space;
+  var U = MK.util, S = MK.space, R = MK.rig;
 
   // Where a layer "is": its anchor point in comp space (world space when `world`).
   function anchorOf(layer, t, world) {
-    var a = layer.transform.anchorPoint.valueAtTime(t, false);
+    var a = S.anchor(layer, t);
     return world ? S.toWorld(layer, a, t) : S.toComp(layer, a, t);
   }
 
   // The corners of a layer's bounds in comp (or world) space.
   function cornersOf(layer, t, world) {
-    var c = S.rectCorners(layer, t, false);
+    var c = R.corners(R.layerBounds(layer, t));
     if (!world) return S.toCompPoints(layer, c, t);
     return S.probe(layer, function (ev) {
       return U.map(c, function (p) { return ev("L.toWorld([" + p[0] + "," + p[1] + ",0])", t); });
@@ -5806,21 +6238,29 @@ MK.layoutDialog = (function () {
       var layers = MK.sel.byIndex(ctx.layers);
       if (!layers.length) ctx.fail("select one or more layers.");
       var t = ctx.time;
-      var targets = U.filter(layers, function (l) { return o.reparentAll || !l.parent; });
+      var picked = {};
+      for (var j = 0; j < layers.length; j++) picked[layers[j].index] = true;
+      // One null for all: a layer below another selected layer follows the null through it.
+      function underPicked(l) {
+        for (var p = l.parent, n = 0; p && n < 200; p = p.parent, n++) if (picked[p.index]) return true;
+        return false;
+      }
+      var targets = U.filter(layers, function (l) { return !l.parent || (o.reparentAll && (o.perLayer || !underPicked(l))); });
       if (!targets.length) ctx.fail("every selected layer already has a parent. Turn on \"Re-parent layers that already have a parent\" in the options (Shift-click) to re-parent them.");
       var kept = layers.length - targets.length, i;
 
       if (o.perLayer) {
         for (i = 0; i < targets.length; i++) {
-          var L = targets[i], d3 = !!L.threeDLayer;
+          var L = targets[i], d3 = S.is3D(L);
           var n = makeNull(ctx, L.name + " Parent", anchorOf(L, t, d3), L, d3);
+          if (L.parent) n.parent = L.parent;
           L.parent = n;
         }
         return ctx.done("Added " + targets.length + (targets.length === 1 ? " null." : " nulls.") + (kept ? " " + kept + " layers kept their parent." : ""));
       }
 
       var all3D = true;
-      for (i = 0; i < layers.length; i++) if (!layers[i].threeDLayer) all3D = false;
+      for (i = 0; i < layers.length; i++) if (!S.is3D(layers[i])) all3D = false;
       var at;
       if (o.anchor === "top") at = anchorOf(layers[0], t, all3D);
       else if (o.anchor === "average") {
@@ -5851,7 +6291,8 @@ MK.layoutDialog = (function () {
 // vertices, the newest first. Each sample is the target's anchor point taken to comp space at
 // its own time (toComp(p, t)), then into the trace layer (fromComp). Trace Smooth r replaces
 // each vertex with the mean of its r neighbours on either side (fewer near the two ends, so the
-// ends stay put). Taper Out thins the stroke towards the oldest end.
+// ends stay put). Taper Out thins the stroke towards the oldest end. Cameras and lights are
+// skipped: they have no anchor point, and toComp of a camera's own position is degenerate.
 
 (function () {
   var NAME = "Position Trace", ID = "positionTrace";
@@ -5919,8 +6360,11 @@ MK.layoutDialog = (function () {
       { key: "taper", label: "Taper Out (the trail thins towards its oldest end)", type: "checkbox", "default": true }
     ],
     run: function (ctx, o) {
-      var layers = MK.sel.byIndex(ctx.layers);
-      if (!layers.length) ctx.fail("select one or more layers to trace.");
+      var all = MK.sel.byIndex(ctx.layers);
+      if (!all.length) ctx.fail("select one or more layers to trace.");
+      var layers = U.filter(all, function (l) { return !MK.space.isCameraOrLight(l); });
+      var skipped = all.length - layers.length;
+      if (!layers.length) ctx.fail("cameras and lights have no anchor point to trace. Select a layer instead, such as a null parented to a light.");
       for (var i = 0; i < layers.length; i++) {
         var L = layers[i];
         var sh = ctx.comp.layers.addShape();
@@ -5953,7 +6397,8 @@ MK.layoutDialog = (function () {
         }
         ctx.created.push(sh);
       }
-      return ctx.done("Added " + layers.length + (layers.length === 1 ? " trace." : " traces."));
+      return ctx.done("Added " + layers.length + (layers.length === 1 ? " trace." : " traces.") +
+        (skipped ? " Skipped " + skipped + (skipped === 1 ? " camera or light" : " cameras and lights") + " (they have no anchor point to trace)." : ""));
     }
   });
 })();
@@ -5967,18 +6412,22 @@ MK.layoutDialog = (function () {
 // enclosing shape groups' matrix (mkX) takes it to the path layer, toComp to comp space and the
 // attached layer's parent fromComp to the space its Position is in. Closed paths wrap (110 % is
 // 10 %), open paths clamp. "Orient along path" turns Rotation to the tangent's angle (through the
-// same spaces as a vector) plus Orient Offset.
+// same spaces as a vector) plus Orient Offset. Each layer's "Path Layer" Layer Control names the
+// path's layer, so renaming that layer keeps the link (the groups and the mask inside it are
+// still found by name).
 
 (function () {
   var NAME = "Slider to Path", ID = "sliderToPath";
   var U = MK.util, C = MK.controls, R = MK.rig;
-  var CTRL = { progress: C.name(NAME, "Path Progress"), orient: C.name(NAME, "Orient along path"), offset: C.name(NAME, "Orient Offset") };
+  var CTRL = { progress: C.name(NAME, "Path Progress"), layer: C.name(NAME, "Path Layer"), orient: C.name(NAME, "Orient along path"), offset: C.name(NAME, "Orient Offset") };
 
-  // The path, its layer (mkL), mkX and mkU, the progress as a fraction.
+  // The path, its layer (mkL), mkX and mkU, the progress as a fraction. Throws (caught by the
+  // caller) when the Path Layer control names no layer.
   function head(pe) {
     return [
-      "  var mkL = thisComp.layer(" + MK.expr.str(pe.layer.name) + ");",
-      R.matrixCode(pe.groups, false) + "  var mkPath = " + R.ref(pe.prop) + ";",
+      "  var mkL = " + R.layerOf(CTRL.layer) + ";",
+      "  if (!mkL) throw new Error(\"no path layer\");",
+      R.matrixCode(pe.groups, "mkL") + "  var mkPath = " + R.ref(pe.prop, "mkL") + ";",
       "  var mkU = " + C.ref(CTRL.progress) + ".value / 100;",
       "  if (!isFinite(mkU)) mkU = 0;",
       "  mkU = mkPath.isClosed() ? mkU - Math.floor(mkU) : Math.max(0, Math.min(1, mkU));"
@@ -6053,6 +6502,7 @@ MK.layoutDialog = (function () {
         if (!want(pos)) continue;
         var at = !o.spread || n === 1 ? 0 : closed ? 100 * i / n : 100 * i / (n - 1);
         C.slider(L, CTRL.progress, at);
+        R.layerControl(L, CTRL.layer, pe.layer);
         MK.expr.set(pos, ID, positionExpr(pe));
         if (o.orient && want(props[n + i])) {
           C.checkbox(L, CTRL.orient, true);
@@ -6061,7 +6511,6 @@ MK.layoutDialog = (function () {
         }
         done++;
       }
-      if (R.nameClash(pe.layer)) ctx.warn("Another layer is also named \"" + pe.layer.name + "\": rename one, or the expressions may read the wrong path.");
       var msg = "Put " + done + (done === 1 ? " layer" : " layers") + " on the path of " + pe.layer.name + ".";
       if (d.skip.length) msg += " Kept " + d.skip.length + " existing expression" + (d.skip.length === 1 ? "." : "s.");
       return ctx.done(msg);
@@ -6180,10 +6629,14 @@ MK.layoutDialog = (function () {
     ],
     run: function (ctx, o) {
       if (!o.shapes && !o.controls) ctx.fail("turn on at least one output in the options (Shift-click).");
-      var layers = ctx.layers;
+      // A new list for the whole comp, so ctx.layers still tells whether layers were selected.
+      var layers = ctx.layers.length ? ctx.layers : [];
       if (!layers.length) for (var i = 1; i <= ctx.comp.numLayers; i++) layers.push(ctx.comp.layer(i));
       var got = gather(layers, ctx.time);
-      if (!got.colors.length) ctx.fail("found no colours in " + (ctx.layers.length ? "the selected layers." : "the comp."));
+      if (!got.colors.length) {
+        ctx.fail("found no colours in " + (ctx.layers.length ? "the selected layers" : "the comp") +
+          (got.gradients ? ", only " + got.gradients + (got.gradients === 1 ? " gradient" : " gradients") + " (gradient stops aren't collected)." : "."));
+      }
       var colors = merge(got.colors, o.tolerance, o.step);
       colors.sort(function (a, b) { return hueKey(a) - hueKey(b); });
       if (o.shapes) paletteShapes(ctx, colors);
@@ -6200,29 +6653,34 @@ MK.layoutDialog = (function () {
 // draws). With groups selected only those are extracted (a nested group counts as its top-level
 // group); a selected shape layer with none of its groups selected gives all of them.
 // When every group of a layer is extracted, the original is hidden (or deleted). When only some
-// are, the original stays visible and the extracted groups are switched off in it (or deleted
-// from it); the new layers sit above it, so a group that drew above an extracted one now draws
-// below it, and the result says so.
+// are, or the layer also has paths outside any group, the original stays visible and the
+// extracted groups are switched off in it (or deleted from it); the new layers sit above it, so
+// a group or path that drew above an extracted group now draws below it, and the result says so.
 //
 // How the contents move: EffectCraft's PropertyGroup.duplicate() and moveTo() work only inside
 // one layer, and shape items reach another layer only through the clipboard (Edit ▸ Copy /
 // Paste), which doesn't bring the layer's transform, parent, timing, blending mode, 3D, masks
 // and effects with their keyframes and expressions. Layer.duplicate() copies all of that
-// exactly, so each new layer is a duplicate of the original with the other top-level groups
-// deleted. Top-level items that aren't groups (a fill, stroke or modifier for every group) stay
-// in each copy.
+// exactly, so each new layer is a duplicate of the original with the other top-level groups and
+// the top-level paths deleted. Top-level paints and modifiers (a fill, stroke or repeater for
+// every group) stay in each copy; top-level paths belong to no group, so only the original keeps
+// them (in every copy they would draw again).
 
 (function () {
   var NAME = "Extract Shapes", SH = MK.shapes, U = MK.util;
 
-  // Indices of the top-level groups in a shape layer's contents.
-  function topGroups(layer) {
+  // A path, rectangle, ellipse or star item.
+  function isPath(p) { return /^ADBE Vector Shape - /.test(p.matchName); }
+
+  // Indices of the top-level items in a shape layer's contents that pass test (default: groups).
+  function topGroups(layer, test) {
     var root = SH.contents(layer), out = [];
-    for (var i = 1; i <= root.numProperties; i++) if (SH.isGroup(root.property(i))) out.push(i);
+    for (var i = 1; i <= root.numProperties; i++) if ((test || SH.isGroup)(root.property(i))) out.push(i);
     return out;
   }
 
-  // [{layer, indices, all}]: what to extract, layers in selection order.
+  // [{layer, indices, all, loose}]: what to extract, layers in selection order. all: every group
+  // and no top-level path, so the original has nothing left to show.
   function plan(ctx) {
     var byId = {}, list = [], i;
     function entry(layer) {
@@ -6242,7 +6700,8 @@ MK.layoutDialog = (function () {
       if (!idx.length) continue;
       idx = idx.slice();
       idx.sort(function (a, b) { return a - b; });
-      out.push({ layer: list[i].layer, indices: idx, all: idx.length === tops.length });
+      var loose = topGroups(list[i].layer, isPath).length;
+      out.push({ layer: list[i].layer, indices: idx, all: idx.length === tops.length && !loose, loose: loose });
     }
     return out;
   }
@@ -6260,7 +6719,7 @@ MK.layoutDialog = (function () {
       { d: "O18 6 4", fill: "accent" }
     ],
     options: [
-      { key: "original", label: "Original layer", type: "dropdown", "default": "hide", items: [["hide", "Keep it, hidden"], ["delete", "Delete it"]], help: "When only some groups are extracted, the original stays and those groups are switched off in it (or deleted from it)." }
+      { key: "original", label: "Original layer", type: "dropdown", "default": "hide", items: [["hide", "Keep it, hidden"], ["delete", "Delete it"]], help: "When only some groups are extracted, or the layer has paths outside any group, the original stays and the extracted groups are switched off in it (or deleted from it)." }
     ],
     run: function (ctx, o) {
       var jobs = plan(ctx);
@@ -6273,7 +6732,7 @@ MK.layoutDialog = (function () {
           var dup = L.duplicate();
           dup.moveBefore(L);
           var droot = SH.contents(dup);
-          for (var n = droot.numProperties; n >= 1; n--) if (n !== idx[k] && SH.isGroup(droot.property(n))) droot.property(n).remove();
+          for (var n = droot.numProperties; n >= 1; n--) if (n !== idx[k] && (SH.isGroup(droot.property(n)) || isPath(droot.property(n)))) droot.property(n).remove();
           dup.name = names[k];
           ctx.created.push(dup);
           made++;
@@ -6283,15 +6742,16 @@ MK.layoutDialog = (function () {
           else L.enabled = false;
           continue;
         }
-        // A group left in the original above an extracted one now draws below it.
-        var tops = topGroups(L);
+        if (jobs[i].loose && idx.length === topGroups(L).length) ctx.warn(L.name + " has paths outside any group; they stay in it, so it stays visible with its groups " + (o.original === "delete" ? "deleted." : "switched off."));
+        // A group or path left in the original above an extracted group now draws below it.
+        var tops = topGroups(L, function (p) { return SH.isGroup(p) || isPath(p); });
         for (k = 0; k < tops.length; k++) if (tops[k] < idx[idx.length - 1] && U.indexOf(idx, tops[k]) < 0) order = true;
         for (k = idx.length - 1; k >= 0; k--) {
           if (o.original === "delete") root.property(idx[k]).remove();
           else root.property(idx[k]).enabled = false;
         }
       }
-      if (order) ctx.warn("Groups left in the original layer that were above an extracted group now draw below it.");
+      if (order) ctx.warn("Groups or paths left in the original layer that were above an extracted group now draw below it.");
       return ctx.done("Extracted " + made + (made === 1 ? " group" : " groups") + " to new layers.");
     }
   });
@@ -6308,6 +6768,10 @@ MK.layoutDialog = (function () {
 // EffectCraft draws a stroke inside a group with one width (scaled by the group's mean scale),
 // while a layer's non-uniform scale or skew stretches its strokes, so such layers are warned
 // about.
+// Timing: pasted keys keep their layer time, so the keys inside each group move by the source's
+// start time (the merged layer starts at 0). The merged layer runs from the earliest in point to
+// the latest out point; a source that shows for less of that, or is time-stretched or
+// time-remapped, is warned about (a group has no in and out points of its own).
 //
 // The contents are copied with EffectCraft's Edit ▸ Copy / Paste of shape items (the only way
 // shape items reach another layer; PropertyGroup.duplicate() stays in its layer): the source's
@@ -6341,6 +6805,20 @@ MK.layoutDialog = (function () {
     var tr = layer.property("ADBE Transform Group");
     for (var i = 1; i <= tr.numProperties; i++) if (tr.property(i).isTimeVarying) return true;
     return false;
+  }
+
+  // Moves every key under `group` by dt seconds: all are read, removed, then written back, so a
+  // moved key never lands on one still waiting to move.
+  function shiftKeys(group, dt) {
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) shiftKeys(p, dt);
+      else if (p instanceof Property && p.numKeys) {
+        var ks = MK.keys.readAll(p);
+        MK.keys.remove(p, U.map(ks, function (k) { return k.index; }));
+        MK.keys.writeAll(p, ks, function (k) { return k.time + dt; });
+      }
+    }
   }
 
   // Pastes copies of src's top-level contents into `group` (on the layer `dest`).
@@ -6385,13 +6863,23 @@ MK.layoutDialog = (function () {
       merged.moveBefore(src[0]);
       merged.transform.anchorPoint.setValue([0, 0]);
       merged.transform.position.setValue([0, 0]);
+      var tin = Infinity, tout = -Infinity;
+      for (i = 0; i < src.length; i++) {
+        tin = Math.min(tin, src[i].inPoint);
+        tout = Math.max(tout, src[i].outPoint);
+      }
+      merged.inPoint = tin;
+      merged.outPoint = tout;
       ctx.created.push(merged);
-      var root = SH.contents(merged), flat = [], lost = [], uneven = [];
+      var root = SH.contents(merged), flat = [], lost = [], uneven = [], trimmed = [], timed = [];
       for (i = 0; i < src.length; i++) {
         var L = src[i];
         var g = root.addProperty(SH.GROUP);
         g.name = L.name;
         copyContents(L, merged, g);
+        if (Math.abs(L.startTime - merged.startTime) > 1e-9) shiftKeys(g, L.startTime - merged.startTime);
+        if (L.inPoint > tin + 1e-6 || L.outPoint < tout - 1e-6) trimmed.push(L.name);
+        if (Math.abs(L.stretch - 100) > 1e-6 || L.timeRemapEnabled) timed.push(L.name);
         var d = decompose(compMatrix(L, t)), tr = SH.groupTransform(g);
         if (Math.abs(d.skew) > 85) ctx.warn(L.name + ": its parents shear it more than a shape group can (skew limited to 85°).");
         tr.property("ADBE Vector Position").setValue(d.position);
@@ -6411,6 +6899,8 @@ MK.layoutDialog = (function () {
       if (flat.length) ctx.warn("Merged groups keep only static transforms, flattened at the current time: " + flat.join(", ") + " (parent, animation or 3D).");
       if (uneven.length) ctx.warn("Strokes in shape groups keep an even width, so strokes under non-uniform scale or skew look different: " + uneven.join(", ") + ".");
       if (lost.length) ctx.warn("Masks, effects and blending modes aren't carried over: " + lost.join(", ") + ".");
+      if (trimmed.length) ctx.warn("Merged groups show for the merged layer's whole time, not between each layer's own in and out points: " + trimmed.join(", ") + ".");
+      if (timed.length) ctx.warn("Time stretch and time remapping aren't carried over: " + timed.join(", ") + ".");
       return ctx.done("Merged " + src.length + " layers into \"Merged Shapes\".");
     }
   });
@@ -6562,8 +7052,16 @@ MK.layoutDialog = (function () {
         }
         for (k = 0; k < (r.skipped || []).length; k++) ctx.warn(r.skipped[k]);
         made++;
-        if (o.source === "delete") L.remove();
-        else L.enabled = false;
+        if (o.source === "delete") {
+          // Layers parented to the source follow the new shape layer instead: the engine gives it
+          // the source's transform, so the same layer space, and no jump.
+          var to = layerById(ctx.comp, r.layers[0]);
+          for (k = 1; to && k <= ctx.comp.numLayers; k++) {
+            var c = ctx.comp.layer(k);
+            if (c.parent && c.parent.id === L.id) c.setParentWithJump(to);
+          }
+          L.remove();
+        } else L.enabled = false;
       }
       if (!made) ctx.fail("none of the selected layers is vector footage (SVG, PDF or Illustrator): " + skipped.join(", ") + ".");
       return ctx.done("Converted " + made + (made === 1 ? " layer" : " layers") + " to shapes." + (skipped.length ? " Skipped (not vector footage): " + skipped.join(", ") + "." : ""));
@@ -6696,7 +7194,14 @@ MK.layoutDialog = (function () {
     options: [
       { key: "point", label: "Anchor point", type: "dropdown", "default": "c", items: U.map(KEYS, function (k) { return [k, LABEL[k]]; }) }
     ],
-    run: function (ctx, o) { return MK.callTool("moveAnchor", ctx, { point: o.point }); },
+    run: function (ctx, o) {
+      // With shape groups selected Move Anchor Point moves only those: say which layers it skips.
+      var groups = U.filter(ctx.groups, MK.shapes.isGroup), own = {}, left = 0, i;
+      for (i = 0; i < groups.length; i++) own[MK.sel.layerOf(groups[i]).index] = true;
+      for (i = 0; groups.length && i < ctx.layers.length; i++) if (!own[ctx.layers[i].index]) left++;
+      if (left) ctx.warn("Skipped " + left + (left === 1 ? " selected layer" : " selected layers") + ": with shape groups selected, only the groups' anchors move.");
+      return MK.callTool("moveAnchor", ctx, { point: o.point });
+    },
     build: function (w) {
       var gap = Math.max(3, Math.round(w.w * 0.05)), side = Math.min(w.w, w.h);
       var sq = Math.max(8, Math.floor((side - 2 * Math.round(side * 0.08) - 2 * gap) / 3));
@@ -6863,7 +7368,9 @@ MK.layoutDialog = (function () {
 // ---- src/tools/widgets/interpolation.js
 // Interpolation widget (2 x 1): Bezier, Hold and Linear buttons set the temporal interpolation
 // of the selected keyframes on both sides. Only the types change (MK.keys.setInterp), so a key
-// switched to Linear or Hold gets its ease back when it goes back to Bezier.
+// switched to Linear or Hold gets its ease back when it goes back to Bezier, and a Linear key
+// that was never eased keeps its Linear speed. Shift-click (or right-click) opens its options
+// instead of setting a type.
 
 (function () {
   var NAME = "Interpolation", U = MK.util;
@@ -6908,11 +7415,12 @@ MK.layoutDialog = (function () {
       var gap = 6, pad = Math.max(4, Math.round(w.h * 0.11));
       var b = Math.max(12, Math.min(w.h - 2 * pad, Math.floor((w.w - 2 * pad - 2 * gap) / 3)));
       var x0 = Math.round((w.w - 3 * b - 2 * gap) / 2), y0 = Math.round((w.h - b) / 2), r = Math.max(2, w.style.radius - 2);
+      w.onShift = function () { w.options("interpolation"); };
       w.buttons = {};
       for (var i = 0; i < ORDER.length; i++) {
         (function (k, x) {
           w.buttons[k] = w.part(k, [x, y0, b, b], {
-            tip: TYPES[k].tip,
+            tip: TYPES[k].tip + ". Shift-click: options",
             click: function () { w.run({ type: k }); },
             draw: function (g) { MK.ui.gfx.button(g, b, b, r, GLYPHS[k], w); }
           });
@@ -6927,11 +7435,13 @@ MK.layoutDialog = (function () {
 //   Copy   the selected keyframes of the selected properties (numbers, points and colours):
 //          values, eases, interpolation, spatial tangents and roving, with their times relative
 //          to the earliest copied key, kept in settings ("keyCopyPaste").
-//   Paste  at the playhead onto the selected properties: the first copied property's keys go
-//          to the first selected property, and so on; one copied property goes to every
-//          selected property. The relative timing is kept, across properties too.
+//   Paste  at the playhead onto the selected properties: a copied property's keys go to the
+//          selected property with the same match name, the rest pair up in order; one copied
+//          property goes to every selected property. The relative timing is kept, across
+//          properties too.
 //   Shift-click Paste: only the easing (the first copied key's eases and interpolation) onto
-//          the selected keyframes, through Ease Copy's paste code.
+//          the selected keyframes, through Ease Copy's paste code, with speeds as multiples of
+//          the segment's average speed (Copy stores each ease's `ratio` as Ease Copy does).
 
 (function () {
   var NAME = "Key Copy/Paste", KEY = "keyCopyPaste", U = MK.util, A = MK.anim, K = MK.keys, T = MK.THEME;
@@ -6946,14 +7456,30 @@ MK.layoutDialog = (function () {
     return n;
   }
 
+  // Sets each ease's ratio: its speed over the average speed of segment a..b (null when there is
+  // no segment there), as Ease Copy's clipboard (version 2) has it; a dimension that doesn't move
+  // takes the first ratio found.
+  function addRatios(eases, p, a, b) {
+    var avg = a >= 1 && b <= p.numKeys ? A.avgSpeed(p, a, b) : [], first = null, d;
+    for (d = 0; d < eases.length; d++) {
+      eases[d].ratio = d < avg.length && Math.abs(avg[d]) > 1e-9 ? eases[d].speed / avg[d] : null;
+      if (first === null) first = eases[d].ratio;
+    }
+    for (d = 0; d < eases.length; d++) if (eases[d].ratio === null) eases[d].ratio = first;
+  }
+
   function copy(ctx) {
     var props = A.withSelectedKeys(ctx.props), usable = U.filter(props, MK.sel.isNumeric);
     if (!usable.length) ctx.fail(props.length ? "only keyframes of numbers, points and colours can be copied." : "select the keyframes to copy.");
     var out = [], t0 = Infinity, i, j;
     for (i = 0; i < usable.length; i++) {
       var ks = K.readSelected(usable[i]);
-      for (j = 0; j < ks.length; j++) t0 = Math.min(t0, ks[j].time);
-      out.push({ from: MK.sel.label(usable[i]), valueType: usable[i].propertyValueType, keys: ks });
+      for (j = 0; j < ks.length; j++) {
+        t0 = Math.min(t0, ks[j].time);
+        addRatios(ks[j].inEase, usable[i], ks[j].index - 1, ks[j].index);
+        addRatios(ks[j].outEase, usable[i], ks[j].index, ks[j].index + 1);
+      }
+      out.push({ from: MK.sel.label(usable[i]), matchName: usable[i].matchName, valueType: usable[i].propertyValueType, keys: ks });
     }
     for (i = 0; i < out.length; i++) {
       for (j = 0; j < out[i].keys.length; j++) {
@@ -6967,11 +7493,31 @@ MK.layoutDialog = (function () {
     return ctx.done(NAME + ": copied " + n + (n === 1 ? " keyframe" : " keyframes") + " from " + out.length + (out.length === 1 ? " property." : " properties."));
   }
 
+  // The copied property for each target: the same property (matchName) first, then the copied
+  // ones left over, in order. One copied property goes to every target.
+  function pair(c, targets) {
+    var out = [], used = [], i, j;
+    if (c.props.length === 1) return U.map(targets, function () { return c.props[0]; });
+    function take(t, k) {
+      out[t] = c.props[k];
+      used[k] = true;
+    }
+    for (i = 0; i < targets.length; i++) {
+      for (j = 0; j < c.props.length && !out[i]; j++) if (!used[j] && c.props[j].matchName && c.props[j].matchName === targets[i].matchName) take(i, j);
+    }
+    for (i = 0, j = 0; i < targets.length; i++) {
+      while (j < c.props.length && used[j]) j++;
+      if (!out[i] && j < c.props.length) take(i, j);
+    }
+    return out;
+  }
+
   function paste(ctx, c) {
     var targets = U.filter(ctx.props, MK.sel.isAnimatable), n = 0, done = 0, i;
     if (!targets.length) ctx.fail("select the properties to paste onto.");
+    var srcs = pair(c, targets);
     for (i = 0; i < targets.length; i++) {
-      var src = c.props.length === 1 ? c.props[0] : c.props[i];
+      var src = srcs[i];
       if (!src) {
         ctx.warn("Skipped " + MK.sel.label(targets[i]) + ": only " + c.props.length + " properties were copied.");
         continue;
@@ -6987,12 +7533,12 @@ MK.layoutDialog = (function () {
     return ctx.done(NAME + ": pasted " + n + (n === 1 ? " keyframe" : " keyframes") + " onto " + done + (done === 1 ? " property" : " properties") + " at " + (Math.round(ctx.time * 1000) / 1000) + " s.");
   }
 
-  // Shift-Paste: Ease Copy's paste with the first copied key as its clipboard, easing and
-  // interpolation only.
+  // Shift-Paste: Ease Copy's paste with the first copied key as its clipboard (version 2: eases
+  // with ratios; a clipboard copied before ratios pastes raw speeds), easing and interpolation only.
   function pasteEase(ctx, c) {
     var props = A.withSelectedKeys(ctx.props), k = c.props[0].keys[0];
     if (!props.length) ctx.fail("select the keyframes to paste the easing onto.");
-    var ec = { value: null, inEase: k.inEase, outEase: k.outEase, inInterp: k.inInterp, outInterp: k.outInterp, expression: "" };
+    var ec = { version: 2, value: null, inEase: k.inEase, outEase: k.outEase, inInterp: k.inInterp, outInterp: k.outInterp, expression: "" };
     return MK.tools.easeCopy.api.paste(ctx, ec, { values: false, easing: true, interp: true, expression: false }, props, NAME);
   }
 
@@ -7050,9 +7596,10 @@ MK.layoutDialog = (function () {
 // Amount is frames per step (negative or fractional too; results round to whole frames) and
 // Step is how many items share each step. Orders: top to bottom (layer index), bottom to top,
 // and from the centre (the middle item or two keep their time, the others move by their
-// distance from the middle, alike on both sides). With keyframes selected on the selected
-// layers it sequences those keyframes, otherwise the layers. It runs the Sequencer tool's code,
-// so that tool's saved curve applies; Shift-click opens its options (random order, curves).
+// distance from the middle, alike on both sides). With keyframes selected on two or more layers
+// it sequences those keyframes, otherwise the layers (a stray key on one layer doesn't count).
+// It runs the Sequencer tool's code, so that tool's saved curve applies; Shift-click opens its
+// options (random order, curves).
 
 (function () {
   var NAME = "Sequencer", U = MK.util, T = MK.THEME;
@@ -7080,8 +7627,13 @@ MK.layoutDialog = (function () {
       { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["centre", "From the centre"]] }
     ],
     run: function (ctx, o) {
-      var keys = MK.anim.withSelectedKeys(ctx.props).length > 0;
-      return MK.callTool("sequencer", ctx, { mode: keys ? "keys" : "layers", order: o.order, step: o.amount, group: o.step });
+      var keyed = MK.anim.withSelectedKeys(ctx.props), layers = {}, n = 0;
+      for (var i = 0; i < keyed.length; i++) {
+        var l = MK.sel.layerOf(keyed[i]).index;
+        if (!layers[l]) n++;
+        layers[l] = true;
+      }
+      return MK.callTool("sequencer", ctx, { mode: n >= 2 ? "keys" : "layers", order: o.order, step: o.amount, group: o.step });
     },
     build: function (w) {
       // Labels, then the two fields side by side, then the three order buttons.
@@ -7466,6 +8018,7 @@ if (!MK.api) {
     toolOrder: MK.toolOrder,
     loadErrors: MK.loadErrors,
     run: MK.run,
+    remove: MK.remove,
     callTool: MK.callTool,
     registerTool: MK.registerTool,
     describe: MK.describe,

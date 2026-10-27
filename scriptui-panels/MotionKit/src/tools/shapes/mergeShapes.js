@@ -9,6 +9,10 @@
 // EffectCraft draws a stroke inside a group with one width (scaled by the group's mean scale),
 // while a layer's non-uniform scale or skew stretches its strokes, so such layers are warned
 // about.
+// Timing: pasted keys keep their layer time, so the keys inside each group move by the source's
+// start time (the merged layer starts at 0). The merged layer runs from the earliest in point to
+// the latest out point; a source that shows for less of that, or is time-stretched or
+// time-remapped, is warned about (a group has no in and out points of its own).
 //
 // The contents are copied with EffectCraft's Edit ▸ Copy / Paste of shape items (the only way
 // shape items reach another layer; PropertyGroup.duplicate() stays in its layer): the source's
@@ -42,6 +46,20 @@
     var tr = layer.property("ADBE Transform Group");
     for (var i = 1; i <= tr.numProperties; i++) if (tr.property(i).isTimeVarying) return true;
     return false;
+  }
+
+  // Moves every key under `group` by dt seconds: all are read, removed, then written back, so a
+  // moved key never lands on one still waiting to move.
+  function shiftKeys(group, dt) {
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) shiftKeys(p, dt);
+      else if (p instanceof Property && p.numKeys) {
+        var ks = MK.keys.readAll(p);
+        MK.keys.remove(p, U.map(ks, function (k) { return k.index; }));
+        MK.keys.writeAll(p, ks, function (k) { return k.time + dt; });
+      }
+    }
   }
 
   // Pastes copies of src's top-level contents into `group` (on the layer `dest`).
@@ -86,13 +104,23 @@
       merged.moveBefore(src[0]);
       merged.transform.anchorPoint.setValue([0, 0]);
       merged.transform.position.setValue([0, 0]);
+      var tin = Infinity, tout = -Infinity;
+      for (i = 0; i < src.length; i++) {
+        tin = Math.min(tin, src[i].inPoint);
+        tout = Math.max(tout, src[i].outPoint);
+      }
+      merged.inPoint = tin;
+      merged.outPoint = tout;
       ctx.created.push(merged);
-      var root = SH.contents(merged), flat = [], lost = [], uneven = [];
+      var root = SH.contents(merged), flat = [], lost = [], uneven = [], trimmed = [], timed = [];
       for (i = 0; i < src.length; i++) {
         var L = src[i];
         var g = root.addProperty(SH.GROUP);
         g.name = L.name;
         copyContents(L, merged, g);
+        if (Math.abs(L.startTime - merged.startTime) > 1e-9) shiftKeys(g, L.startTime - merged.startTime);
+        if (L.inPoint > tin + 1e-6 || L.outPoint < tout - 1e-6) trimmed.push(L.name);
+        if (Math.abs(L.stretch - 100) > 1e-6 || L.timeRemapEnabled) timed.push(L.name);
         var d = decompose(compMatrix(L, t)), tr = SH.groupTransform(g);
         if (Math.abs(d.skew) > 85) ctx.warn(L.name + ": its parents shear it more than a shape group can (skew limited to 85°).");
         tr.property("ADBE Vector Position").setValue(d.position);
@@ -112,6 +140,8 @@
       if (flat.length) ctx.warn("Merged groups keep only static transforms, flattened at the current time: " + flat.join(", ") + " (parent, animation or 3D).");
       if (uneven.length) ctx.warn("Strokes in shape groups keep an even width, so strokes under non-uniform scale or skew look different: " + uneven.join(", ") + ".");
       if (lost.length) ctx.warn("Masks, effects and blending modes aren't carried over: " + lost.join(", ") + ".");
+      if (trimmed.length) ctx.warn("Merged groups show for the merged layer's whole time, not between each layer's own in and out points: " + trimmed.join(", ") + ".");
+      if (timed.length) ctx.warn("Time stretch and time remapping aren't carried over: " + timed.join(", ") + ".");
       return ctx.done("Merged " + src.length + " layers into \"Merged Shapes\".");
     }
   });

@@ -26,7 +26,31 @@ MK.fail = function (message) { throw new MK.UserError(message); };
 // The prompts tools use. Tests replace them to answer questions without a person.
 MK.prompts = {
   alert: function (msg) { alert(msg, MK.NAME); },
-  confirm: function (msg) { return confirm(msg); }
+  // EffectCraft's confirm() shows the question as a notice and answers yes, so there it asks in
+  // a dialog (the message wrapped by hand: EffectCraft's static text doesn't wrap).
+  confirm: function (msg) {
+    if (!MK.util.EFFECTCRAFT) return confirm(msg);
+    var w = new Window("dialog", MK.NAME), yes = false, words = String(msg).split(" "), line = "";
+    w.orientation = "column";
+    w.alignChildren = ["left", "top"];
+    for (var i = 0; i <= words.length; i++) {
+      if (i < words.length && (line + " " + words[i]).length <= 64) line = line ? line + " " + words[i] : words[i];
+      else {
+        if (line) w.add("statictext", undefined, line);
+        line = i < words.length ? words[i] : "";
+      }
+    }
+    var row = w.add("group");
+    row.alignment = ["right", "top"];
+    var no = row.add("button", undefined, "No", { name: "cancel" });
+    var ok = row.add("button", undefined, "Yes", { name: "ok" });
+    ok.onClick = function () { yes = true; w.close(1); };
+    no.onClick = function () { w.close(2); };
+    w.defaultElement = ok;
+    w.cancelElement = no;
+    w.show();
+    return yes;
+  }
 };
 
 MK.util = (function () {

@@ -22,11 +22,16 @@ MK.anim = (function () {
   };
 
   // Moves keys `indices` (1-based) of prop to newTime(key): all are read, removed, then written,
-  // so they can't land on each other. A key landing on an unmoved key replaces it.
+  // so they can't land on each other. A key landing on an unmoved key replaces it. Unmoved
+  // roving keys are rewritten in place first: removing a roving key's neighbours ends its roving.
   A.move = function (prop, indices, newTime) {
+    var moving = {}, stay = [];
+    for (var j = 0; j < indices.length; j++) moving[indices[j]] = true;
+    for (var i = 1; i <= prop.numKeys; i++) if (!moving[i] && prop.keyRoving(i)) stay.push(K.read(prop, i));
     var ks = U.map(indices, function (i) { return K.read(prop, i); });
-    K.remove(prop, indices);
-    return A.writeAll(prop, ks, newTime);
+    K.remove(prop, indices.concat(U.map(stay, function (k) { return k.index; })));
+    A.writeAll(prop, stay.concat(ks), function (k) { return moving[k.index] ? newTime(k) : k.time; });
+    return ks.length;
   };
 
   // The properties among `props` that have selected keyframes.
@@ -51,9 +56,10 @@ MK.anim = (function () {
 
   // The average speed from key a to key b, one entry per temporal ease dimension, in the units
   // KeyframeEase speeds use: signed per dimension, or the path length per second for spatial
-  // and other single-ease array values.
+  // and other single-ease array values. Seconds of layer time: EffectCraft measures ease speeds
+  // there, so a 200 % stretched layer needs twice the speed (key times are comp time).
   A.avgSpeed = function (prop, a, b) {
-    var dims = prop.keyOutTemporalEase(a).length, dt = prop.keyTime(b) - prop.keyTime(a);
+    var dims = prop.keyOutTemporalEase(a).length, dt = (prop.keyTime(b) - prop.keyTime(a)) * 100 / (MK.sel.layerOf(prop).stretch || 100);
     var va = prop.keyValue(a), vb = prop.keyValue(b), out = [];
     if (!(dt > 0)) dt = 1;
     if (!U.isArray(va)) return [(vb - va) / dt];

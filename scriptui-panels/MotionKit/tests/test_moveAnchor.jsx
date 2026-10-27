@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Move Anchor Point: comp positions kept with rotation, scale and a rotated, scaled parent, at
 // and between keyframes; keyed anchor points; 3D layers (world positions kept); mask bounds;
-// shape groups within their own bounds; expressions skipped; the 3 x 3 options grid; bad
-// selection; one undo step. Comp positions are checked with EffectCraft's own sourcePointToComp.
+// shape groups within their own bounds; exact shape-layer bounds (no stroke, no padding);
+// animated rotation and scale (Position keyed where they change); expressions skipped; the 3 x 3
+// options grid; bad selection; one undo step. Comp positions are checked with EffectCraft's own
+// sourcePointToComp.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var H = MotionKit.helpers;
 
@@ -143,6 +145,47 @@ r = MotionKit.run("moveAnchor", { point: "l" });
 T.check(r.ok && /1 group/.test(r.message) && T.near(gt.property("ADBE Vector Anchor").value, [-10, 10], 1e-3), "a selected group: its anchor goes to the left middle of its own contents (nested ellipse included): " + r.message);
 T.check(same(groupPts(), gBefore), "and the group's contents don't move in comp space");
 T.check(T.near(sh.transform.anchorPoint.value, [0, 0, 0]), "the layer's own anchor is left alone");
+
+// Shape layers: the exact corners of the contents, without strokes (EffectCraft's own rectangle
+// adds 1 px on each side and counts the stroke).
+var stroked = comp.layers.addShape();
+var srect = stroked.property("ADBE Root Vectors Group").addProperty("ADBE Vector Shape - Rect");
+srect.property("ADBE Vector Rect Size").setValue([100, 50]);
+srect.property("ADBE Vector Rect Position").setValue([30, 0]);
+stroked.property("ADBE Root Vectors Group").addProperty("ADBE Vector Graphic - Stroke").property("ADBE Vector Stroke Width").setValue(10);
+var sb = [stroked.sourcePointToComp([-20, -25]), stroked.sourcePointToComp([80, 25])];
+T.select(comp, [stroked], []);
+r = MotionKit.run("moveAnchor", { point: "tl" });
+T.check(r.ok && T.near(stroked.transform.anchorPoint.value, [-20, -25, 0], 1e-6), "a stroked rectangle's top left is its geometry's corner (" + stroked.transform.anchorPoint.value.join(", ") + ")");
+T.check(T.near(stroked.sourcePointToComp([-20, -25]), sb[0], 1e-3) && T.near(stroked.sourcePointToComp([80, 25]), sb[1], 1e-3), "and the shape doesn't move");
+T.select(comp, [stroked], []);
+MotionKit.run("moveAnchor", { point: "br" });
+T.check(T.near(stroked.transform.anchorPoint.value, [80, 25, 0], 1e-6), "bottom right: [80, 25]");
+
+// Animated rotation with keyed Position: Position gets keys where rotation changes and at the
+// current time, so nothing moves there.
+var spin = T.solid(comp, "Spin", 200, 100);
+spin.transform.position.setValueAtTime(0, [300, 300]);
+spin.transform.position.setValueAtTime(2, [700, 300]);
+spin.transform.rotation.setValueAtTime(0, 0);
+spin.transform.rotation.setValueAtTime(2, 180);
+comp.time = 1;
+before = snap(spin, 200, 100);
+T.select(comp, [spin], []);
+r = MotionKit.run("moveAnchor", { point: "tl" });
+T.check(r.ok && /Spin has animated scale or rotation/.test(r.message) && /can drift slightly between them/.test(r.message), "animated rotation: the message says so: " + r.message);
+T.check(spin.transform.position.numKeys === 3 && kept(spin, 200, 100, before), "Position gets a key at the current time (t = 1); nothing moves at t = 0, 1 and 2");
+// Animated scale with a static Position: Position gets keys at the scale keys and the current time.
+comp.time = 0;
+var grow = T.solid(comp, "Grow", 200, 100);
+grow.transform.position.setValue([500, 300]);
+grow.transform.scale.setValueAtTime(0, [50, 50]);
+grow.transform.scale.setValueAtTime(2, [200, 200]);
+before = snap(grow, 200, 100);
+T.select(comp, [grow], []);
+r = MotionKit.run("moveAnchor", { point: "tl" });
+T.check(r.ok && grow.transform.position.numKeys === 2 && kept(grow, 200, 100, before), "animated scale, static Position: keys at t = 0 and 2, nothing moves at t = 0, 1, 2 (linear scale)");
+comp.time = 1;
 
 // The 3 x 3 grid in the options dialog.
 var dlg = MotionKit.optionsDialog.build(MotionKit.tools.moveAnchor, { point: "tr", masks: false });

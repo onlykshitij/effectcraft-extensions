@@ -209,7 +209,7 @@ W("sequencerWidget").step.text = "2";
 W("sequencerWidget").step.notify("onChange");
 T.select(seqComp, Ls, []);
 click(W("sequencerWidget").buttons.centre);
-T.check(frames() === "-1,0,0,0,-1", "centre with Step 2 and a negative, fractional Amount (-1.5 rounds to -1 frame): " + frames());
+T.check(frames() === "-2,0,0,0,-2", "centre with Step 2 and a negative, fractional Amount (-1.5 rounds away from zero to -2 frames): " + frames());
 reset();
 T.alerts = [];
 W("sequencerWidget").step.text = "0";
@@ -236,5 +236,118 @@ click(W("sequencerWidget").buttons.topDown);
 T.check(frames() === "0,0,0,0,0" && T.near(kp[0].keyTime(1), 1) && T.near(kp[1].keyTime(1), 1 + 3 * F) && T.near(kp[2].keyTime(2), 2 + 6 * F), "with keyframes selected it sequences the keyframes");
 click(W("sequencerWidget").buttons.topDown, { shiftKey: true });
 T.check(opened.pop() === "sequencer", "Shift-click opens the full Sequencer options");
+
+// ---- regressions
+var rg = T.comp("Widget Regressions");
+// Paste pairs by match name first: Rotation and Opacity copied, then Opacity and Rotation
+// selected the other way round.
+var ga = T.solid(rg, "GA", 100, 100), gb = T.solid(rg, "GB", 100, 100), gra = ga.transform.rotation, goa = ga.transform.opacity;
+gra.setValueAtTime(0, 0);
+gra.setValueAtTime(1, 90);
+goa.setValueAtTime(0, 100);
+goa.setValueAtTime(1, 20);
+T.select(rg, [], []);
+keySel(gra, [1, 2]);
+keySel(goa, [1, 2]);
+click(W("keyCopyPaste").copy);
+rg.time = 0;
+T.select(rg, [gb], [gb.transform.opacity, gb.transform.rotation]);
+click(W("keyCopyPaste").paste);
+T.check(T.near(gb.transform.opacity.keyValue(2), 20) && T.near(gb.transform.rotation.keyValue(2), 90), "Paste puts each copied property on the selected property of the same name, whatever the selection order");
+// A run that worked but skipped something says so.
+T.select(rg, [], []);
+keySel(goa, [1, 2]);
+click(W("keyCopyPaste").copy);
+var gc = T.solid(rg, "GC", 100, 100), grc = gc.transform.rotation;
+T.select(rg, [gc], [grc, gc.transform.scale]);
+T.alerts = [];
+click(W("keyCopyPaste").paste);
+T.check(grc.numKeys === 2 && gc.transform.scale.numKeys === 0 && /^Key Copy\/Paste: pasted 2 keyframes[\s\S]*Skipped "Scale" on GC/.test(T.lastAlert()), "a paste that skips a property says so: " + T.lastAlert());
+var gcb = gc.property("ADBE Effect Parade").addProperty("ADBE Checkbox Control").property(1);
+gcb.setValueAtTime(0, 0);
+gcb.setValueAtTime(1, 1);
+T.select(rg, [], []);
+keySel(grc, [1]);
+keySel(gcb, [1]);
+T.alerts = [];
+click(W("interpolation").buttons.bezier);
+T.check(grc.keyOutInterpolationType(1) === BEZ && /Skipped 1 property that can't take it/.test(T.lastAlert()), "Bezier on a checkbox's keys as well: the rest is set and the skip is shown (" + T.lastAlert() + ")");
+var gs = rg.layers.addShape(), grp = gs.property("ADBE Root Vectors Group").addProperty("ADBE Vector Group");
+grp.property("ADBE Vectors Group").addProperty("ADBE Vector Shape - Rect");
+var gd = T.solid(rg, "GD", 200, 100);
+T.select(rg, [gs, gd], [grp]);
+T.alerts = [];
+click(W("anchor").squares.br);
+T.check(T.near(gd.transform.anchorPoint.value, [100, 50]) && /Skipped 1 selected layer/.test(T.lastAlert()), "Anchor with a shape group and another layer selected says it leaves the layer alone (" + T.lastAlert() + ")");
+// Shift-Paste takes speeds as multiples of the segment's average: a fade-in's fast start
+// (1.5 x its average) pasted onto a fade-out goes down at 1.5 x, without overshooting.
+var fi = T.solid(rg, "Fade In", 100, 100).transform.opacity, fo = T.solid(rg, "Fade Out", 100, 100).transform.opacity;
+fi.setValueAtTime(0, 0);
+fi.setValueAtTime(1, 100);
+fi.setTemporalEaseAtKey(1, [new KeyframeEase(0, 33)], [new KeyframeEase(150, 50)]);
+fo.setValueAtTime(0, 100);
+fo.setValueAtTime(1, 0);
+T.select(rg, [], []);
+keySel(fi, [1, 2]);
+click(W("keyCopyPaste").copy);
+T.select(rg, [], []);
+keySel(fo, [1]);
+click(W("keyCopyPaste").paste, { shiftKey: true });
+var lo = Infinity, hi = -Infinity;
+for (var f = 0; f <= 25; f++) {
+  lo = Math.min(lo, fo.valueAtTime(f * F, false));
+  hi = Math.max(hi, fo.valueAtTime(f * F, false));
+}
+T.check(T.near(fo.keyOutTemporalEase(1)[0].speed, -150) && lo >= -1e-6 && hi <= 100 + 1e-6, "Shift-Paste of a fade-in's ease onto a fade-out: -150 per second, staying within 0..100 (" + lo + " to " + hi + ")");
+// Alt-click on a widget explains instead of running; Shift-click and right-click on
+// Interpolation open its options.
+T.select(rg, [], []);
+keySel(grc, [1]);
+T.alerts = [];
+click(W("interpolation").buttons.hold, { altKey: true });
+T.check(grc.keyOutInterpolationType(1) === BEZ && /^Interpolation: Alt-click removes what a tool added/.test(T.lastAlert()), "Alt-click on a widget part changes nothing and explains: " + T.lastAlert());
+opened = [];
+click(W("interpolation").buttons.linear, { shiftKey: true });
+click(W("interpolation").buttons.hold, { button: 2 });
+T.check(opened.join(",") === "interpolation,interpolation" && grc.keyOutInterpolationType(1) === BEZ, "Shift-click and right-click on Interpolation open its options, changing nothing");
+// Bezier on Linear keys that were never eased keeps their speed instead of stopping at each key.
+var lk = T.solid(rg, "Lin", 100, 100).transform.opacity;
+lk.setValueAtTime(0, 0);
+lk.setValueAtTime(1, 100);
+lk.setValueAtTime(2, 0);
+T.select(rg, [], []);
+keySel(lk, [1, 2, 3]);
+click(W("interpolation").buttons.bezier);
+T.check(lk.keyInInterpolationType(2) === BEZ && T.near(lk.keyInTemporalEase(2)[0].speed, 100) && T.near(lk.keyOutTemporalEase(2)[0].speed, -100) && T.near(lk.valueAtTime(5 * F, false), 20, 0.01),
+  "Bezier on never-eased Linear keys keeps their speed (" + lk.valueAtTime(5 * F, false) + " at frame 5, as Linear)");
+// Sequencer: fractional Amounts round halves away from zero, so -Amount mirrors +Amount; a
+// key selected on one layer only doesn't switch it to keyframes.
+var rc = T.comp("Widget Rounding"), Rs = [T.solid(rc, "R0", 20, 20), T.solid(rc, "R1", 20, 20), T.solid(rc, "R2", 20, 20)];
+function stagger(amount, n) {
+  W("sequencerWidget").amount.text = amount;
+  W("sequencerWidget").amount.notify("onChange");
+  var sel = [], out = [];
+  for (var i = 1; i <= 3; i++) rc.layer(i).startTime = 0;
+  for (var k = 1; k <= n; k++) sel.push(rc.layer(k));
+  T.select(rc, sel, []);
+  click(W("sequencerWidget").buttons.topDown);
+  for (var j = 1; j <= n; j++) out.push(Math.round(rc.layer(j).inPoint / F));
+  return out.join(",");
+}
+W("sequencerWidget").step.text = "1";
+W("sequencerWidget").step.notify("onChange");
+var half = [stagger("0.5", 2), stagger("-0.5", 2), stagger("1.5", 3), stagger("-1.5", 3)];
+T.check(half.join(" ") === "0,1 0,-1 0,2,3 0,-2,-3", "Amount 0.5 / -0.5 on two layers and 1.5 / -1.5 on three mirror each other: " + half.join(" "));
+var ro = rc.layer(1).transform.opacity;
+ro.setValueAtTime(0, 0);
+ro.setValueAtTime(1, 100);
+T.select(rc, Rs, []);
+ro.setSelectedAtKey(1, true);
+W("sequencerWidget").amount.text = "2";
+W("sequencerWidget").amount.notify("onChange");
+for (var z = 1; z <= 3; z++) rc.layer(z).startTime = 0;
+T.alerts = [];
+click(W("sequencerWidget").buttons.topDown);
+T.check(Math.round(rc.layer(2).inPoint / F) === 2 && Math.round(rc.layer(3).inPoint / F) === 4 && T.near(ro.keyTime(1), 0) && !T.alerts.length, "three layers and a key selected on one of them: the layers are sequenced (" + T.alerts.join("") + ")");
 
 T.done();

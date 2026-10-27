@@ -3,7 +3,9 @@
 // are read with sampleImage through a comp that holds it), each group's matrix equals its
 // source's layer-to-comp matrix (a parent with non-uniform scale makes a skew), group order,
 // contents copied with keyframes, opacity, warnings for parents and animation, the merged layer
-// at the origin with an identity transform, hide or delete, bad selections, one Undo.
+// at the origin with an identity transform, hide or delete, bad selections, one Undo; timing:
+// keys move with the source's start time, the merged layer spans the sources' in-out range, and
+// a source that shows for less of it or is time-stretched is warned about.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var H = MotionKit.helpers, SH = H.shapes;
 var UNDO = app.findMenuCommandId("Undo");
@@ -164,5 +166,37 @@ r = MotionKit.run("mergeShapes", { sources: "delete" });
 T.check(r.ok && comp.numLayers === n0 - 1 && !comp.layer("A") && !comp.layer("B") && SH.contents(comp.layer("Merged Shapes")).numProperties === 2, "delete: the sources are gone");
 T.check(/even width[^\n]*: A\./.test(r.message), "warns that A's stroke, under non-uniform scale and skew, will look different");
 T.check(!/static transforms[^\n]*B/.test(r.message), "B (static, no parent) isn't warned about");
+
+// Timing. P and Q start at 1 s and end at 3 s, their box Size keyed at comp 1 s (20) and 3 s (80):
+// pasted keys keep their layer time (0 and 2 s), so they have to move by the start time.
+var tc = T.comp("Merge Timing", 300, 200, 5, 25);
+tc.time = 2;
+function timedLayer(name, x, start, out) {
+  var L = tc.layers.addShape();
+  L.name = name;
+  L.transform.position.setValue([x, 100]);
+  var size = SH.inner(addGroup(SH.contents(L), name + " Box", "rect", [40, 40], [0, 0], [1, 0, 0])).property(1).property("ADBE Vector Rect Size");
+  L.startTime = start;
+  L.outPoint = out;
+  size.setValueAtTime(start, [20, 20]);
+  size.setValueAtTime(start + 2, [80, 80]);
+  return L;
+}
+function boxSize(group) { return SH.inner(SH.inner(group).property(1)).property(1).property("ADBE Vector Rect Size"); }
+var P = timedLayer("P", 80, 1, 3), Q = timedLayer("Q", 220, 1, 3);
+T.select(tc, [P, Q], []);
+r = MotionKit.run("mergeShapes");
+var mt = tc.layer("Merged Shapes"), ps = boxSize(SH.contents(mt).property(2));
+T.check(r.ok && ps.numKeys === 2 && T.near(ps.keyTime(1), 1) && T.near(ps.keyTime(2), 3) && T.near(ps.valueAtTime(2, false), [50, 50]), "keys inside keep their comp times (1 s and 3 s, 50 x 50 at 2 s), not the layer times (" + ps.keyTime(1) + ", " + ps.keyTime(2) + ")");
+T.check(T.near(mt.inPoint, 1) && T.near(mt.outPoint, 3) && !/own in and out/.test(r.message), "both run from 1 s to 3 s: so does the merged layer, no timing warning");
+app.executeCommand(UNDO);
+T.check(tc.numLayers === 2 && P.enabled && Q.enabled && T.near(boxSize(SH.contents(P)).keyTime(1), 1), "one Undo reverts it");
+var R = timedLayer("R", 150, 0, 5);
+R.stretch = 200;
+T.select(tc, [P, R], []);
+r = MotionKit.run("mergeShapes");
+mt = tc.layer("Merged Shapes");
+T.check(r.ok && T.near(mt.inPoint, 0) && T.near(mt.outPoint, R.outPoint) && /own in and out points: P\./.test(r.message), "the merged layer spans both; P, shown for less of it, is warned about");
+T.check(/Time stretch and time remapping aren't carried over: R\./.test(r.message), "R's 200 % stretch is warned about");
 
 T.done();

@@ -50,4 +50,53 @@ T.check(T.near(pos.valueAtTime(0.9, false)[0], 100 - 400 * wave(0.1), 1e-3), "Ju
 fx.property("Elastic – Decay").property(1).setValue(0);
 T.check(T.near(pos.valueAtTime(2.1, false)[0], 500 + 400 * 0.06 * Math.sin(2 * Math.PI * 2.5 * 0.1), 1e-3), "the Decay control drives it");
 
+// Key i of prop eased to a stop on both sides (Easy Ease: speed 0), as the timeline's Easy Ease does.
+function easeStop(prop, i) {
+  var z = [], e = prop.keyInTemporalEase(i);
+  for (var k = 0; k < e.length; k++) z.push(new KeyframeEase(0, 33.33));
+  prop.setInterpolationTypeAtKey(i, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
+  prop.setTemporalEaseAtKey(i, z, z);
+}
+// Position eased to a stop and scale on Hold: both stop at the last key, so the note counts both.
+easeStop(pos, pos.numKeys);
+scl.setInterpolationTypeAtKey(scl.numKeys, KeyframeInterpolationType.HOLD, KeyframeInterpolationType.HOLD);
+T.select(comp, [box], [pos, scl]);
+T.answer = false;
+var still = MotionKit.run("elastic");
+T.check(still.ok && /They stop at the last keyframe/.test(still.message), "eased or Hold last keys, Linear declined: the message says nothing moves after them: " + still.message);
+T.answer = true;
+var lin = MotionKit.run("elastic");
+T.check(lin.ok && /1 of them stop/.test(lin.message) && /Made one last keyframe arrive Linear/.test(lin.message) && pos.keyInInterpolationType(pos.numKeys) === KeyframeInterpolationType.LINEAR &&
+  scl.keyInInterpolationType(scl.numKeys) === KeyframeInterpolationType.HOLD, "on yes the eased key arrives Linear; the Hold one is left alone: " + lin.message);
+
+// A Hold segment (the key before holds) or an unchanged last segment also arrives at rest: the
+// note says so, and there's no Linear question (a Linear arrival wouldn't help).
+var held = T.solid(comp, "Held", 40, 40), hp = held.transform.position;
+hp.setValueAtTime(0, [100, 100]);
+hp.setValueAtTime(1, [300, 100]);
+hp.setValueAtTime(2, [700, 100]);
+hp.setInterpolationTypeAtKey(2, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.HOLD);
+var same = held.transform.rotation;
+same.setValueAtTime(0, 0);
+same.setValueAtTime(1, 45);
+same.setValueAtTime(2, 45);
+T.select(comp, [held], [hp, same]);
+T.confirms = [];
+var hr = MotionKit.run("elastic");
+T.check(hr.ok && /They stop at the last keyframe/.test(hr.message) && T.confirms.length === 0 && T.near(hp.valueAtTime(2.1, false)[0], 700), "after a Hold segment or no change: the note, no Linear question: " + hr.message);
+
+// A camera in the selection is skipped up front (it can't hold controls); the solid still gets Elastic.
+var cam = comp.layers.addCamera("Cam", [200, 200]), cp = cam.transform.position;
+cp.setValueAtTime(0, [0, 0, -500]);
+cp.setValueAtTime(1, [100, 0, -500]);
+var solo = T.solid(comp, "Solo", 40, 40), sp = solo.transform.position;
+sp.setValueAtTime(0, [0, 0]);
+sp.setValueAtTime(1, [400, 0]);
+T.select(comp, [cam, solo], [cp, sp]);
+var cr = MotionKit.run("elastic");
+T.check(cr.ok && /Skipped 1 on cameras or lights/.test(cr.message) && sp.expression.indexOf("// Motion Kit: elastic") === 0 && cp.expression === "", "a camera is skipped and named; the solid gets Elastic: " + cr.message);
+T.select(comp, [cam], [cp]);
+var co = MotionKit.run("elastic");
+T.check(!co.ok && /cameras and lights can't hold Elastic's controls/.test(co.message) && cp.expression === "", "only a camera selected: refused, nothing changed: " + co.message);
+
 T.done();

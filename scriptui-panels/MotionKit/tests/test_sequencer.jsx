@@ -2,8 +2,8 @@
 // Sequencer: layer in-points staggered for each order (top to bottom, bottom to top, from the
 // centre with odd and even counts, selection, seeded random: same seed same order), each curve,
 // several items per step, negative and fractional steps rounded to frames, keyframes moving
-// with their layer; Keyframes mode moves each layer's selected keys together; the Reseed
-// button; bad selections; one undo step.
+// with their layer; Keyframes mode moves each layer's selected keys together, unselected roving
+// keys between them still roving; the Reseed button; bad selections; one undo step.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var LIN = KeyframeInterpolationType.LINEAR, BEZ = KeyframeInterpolationType.BEZIER;
 var comp = T.comp("Sequencer Test"), F = comp.frameDuration;
@@ -167,5 +167,26 @@ var s = Number(seedEdit.text);
 T.check(s >= 1 && s <= 99999 && Math.round(s) === s, "Reseed picks a new whole-number seed (" + seedEdit.text + ")");
 seedEdit.text = "x";
 T.check(od.read().errors.length === 1 && /whole number/.test(od.read().errors[0]), "a seed that isn't a number is refused");
+
+// ---- Keyframes mode: an unselected roving key between moved keys still roves
+var comp2 = T.comp("Sequencer Roving");
+var rps = [T.solid(comp2, "R1", 20, 20).transform.position, T.solid(comp2, "R2", 20, 20).transform.position];
+T.select(comp2, [], []);
+for (var m = 0; m < 2; m++) {
+  rps[m].setValueAtTime(0, [0, 0]);
+  rps[m].setValueAtTime(1, [300, 0]);
+  rps[m].setValueAtTime(2, [300, 300]);
+  rps[m].setInterpolationTypeAtKey(2, BEZ, BEZ);
+  rps[m].setRovingAtKey(2, true);
+  rps[m].setSelectedAtKey(1, true);
+  rps[m].setSelectedAtKey(3, true);
+}
+// R2 (index 1) stays; R1's keys 1 and 3 move 5 frames (0.2 s) later.
+r = MotionKit.run("sequencer", { mode: "keys", order: "topDown", step: 5, curve: "linear" });
+var rp1 = rps[0], rp2 = rps[1];
+T.check(r.ok && rp1.numKeys === 3 && T.near(rp1.keyTime(1), 0.2) && T.near(rp1.keyTime(3), 2.2) && rp1.keySelected(1) && rp1.keySelected(3) && !rp1.keySelected(2),
+  "the selected keys around a roving key move: " + r.message);
+T.check(rp1.keyRoving(2) && T.near(rp1.keyTime(2), 1.2, 0.01) && T.near(rp1.keyValue(2), [300, 0]), "the roving key between them still roves, re-timed to " + rp1.keyTime(2).toFixed(4) + " s");
+T.check(rp2.keyRoving(2) && T.near(rp2.keyTime(2), 1, 0.01), "the first layer's roving key is untouched");
 
 T.done();

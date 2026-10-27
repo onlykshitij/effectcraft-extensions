@@ -4,9 +4,10 @@
 // Amount is frames per step (negative or fractional too; results round to whole frames) and
 // Step is how many items share each step. Orders: top to bottom (layer index), bottom to top,
 // and from the centre (the middle item or two keep their time, the others move by their
-// distance from the middle, alike on both sides). With keyframes selected on the selected
-// layers it sequences those keyframes, otherwise the layers. It runs the Sequencer tool's code,
-// so that tool's saved curve applies; Shift-click opens its options (random order, curves).
+// distance from the middle, alike on both sides). With keyframes selected on two or more layers
+// it sequences those keyframes, otherwise the layers (a stray key on one layer doesn't count).
+// It runs the Sequencer tool's code, so that tool's saved curve applies; Shift-click opens its
+// options (random order, curves).
 
 (function () {
   var NAME = "Sequencer", U = MK.util, T = MK.THEME;
@@ -34,8 +35,13 @@
       { key: "order", label: "Order", type: "dropdown", "default": "topDown", items: [["topDown", "Top to bottom"], ["bottomUp", "Bottom to top"], ["centre", "From the centre"]] }
     ],
     run: function (ctx, o) {
-      var keys = MK.anim.withSelectedKeys(ctx.props).length > 0;
-      return MK.callTool("sequencer", ctx, { mode: keys ? "keys" : "layers", order: o.order, step: o.amount, group: o.step });
+      var keyed = MK.anim.withSelectedKeys(ctx.props), layers = {}, n = 0;
+      for (var i = 0; i < keyed.length; i++) {
+        var l = MK.sel.layerOf(keyed[i]).index;
+        if (!layers[l]) n++;
+        layers[l] = true;
+      }
+      return MK.callTool("sequencer", ctx, { mode: n >= 2 ? "keys" : "layers", order: o.order, step: o.amount, group: o.step });
     },
     build: function (w) {
       // Labels, then the two fields side by side, then the three order buttons.

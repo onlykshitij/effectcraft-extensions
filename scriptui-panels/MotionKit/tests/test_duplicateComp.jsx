@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Duplicate Comp: comp("<old name>") expressions in the copies are rewritten to the copies'
-// names (others are left alone), names count up ("Main 2", "Main 3") or take a suffix, Project
-// panel selections, Deep duplicates each nested precomp once and points the copies at the
-// copies, one Undo, nothing to duplicate.
+// names (others are left alone; without Deep only a copy's own name), names count up ("Main 2",
+// "Main 3") or take a suffix, Project panel selections, Deep duplicates each nested precomp once
+// and points the copies at the copies, no Deep note without nested precomps, one Undo, nothing
+// to duplicate.
 // Deep needs Layer.replaceSource (EffectCraft after 0.14); without it the deep checks are skipped
 // and the tool's warning is checked instead.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
@@ -93,5 +94,20 @@ var n1 = app.project.numItems;
 r = MotionKit.run("duplicateComp", { deep: false });
 T.check(r.ok && r.created.length === 2 && /Duplicated 2 comps/.test(r.message) && itemNamed("Other 2") && itemNamed("Pre 2") && app.project.numItems === n1 + 2, "the two selected comps are duplicated, not the active one: " + r.message);
 T.check(itemNamed("Pre 2").layer("PS").transform.opacity.expression === ps.transform.opacity.expression, "Inner wasn't duplicated, so Pre 2 still reads comp(\"Inner\")");
+
+// ---- Main and Pre both selected, Deep off: Main's copy still uses Pre, so its comp("Pre")
+// stays; only its own name changes
+deselectItems();
+main.selected = true;
+pre.selected = true;
+r = MotionKit.run("duplicateComp", { deep: false });
+var mc = r.created[0].name.indexOf("Main") === 0 ? r.created[0] : r.created[1], me = mc.layer("S").transform.position.expression;
+T.check(r.ok && mc.layer(2).source.id === pre.id && me.indexOf("comp(\"Pre\")") >= 0 && me.indexOf("comp(\"" + mc.name + "\")") >= 0, "the copy of Main reads comp(\"Pre\"), the comp its layers use, and its own name: " + me.split("\n")[0]);
+
+// ---- Deep with no nested precomps: nothing to warn about
+deselectItems();
+other.selected = true;
+r = MotionKit.run("duplicateComp");
+T.check(r.ok && !/weren't duplicated/.test(r.message), "a comp without precomps: no note about nested precomps (" + r.message + ")");
 
 T.done();

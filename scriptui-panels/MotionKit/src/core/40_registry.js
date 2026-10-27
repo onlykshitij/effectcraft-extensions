@@ -168,6 +168,9 @@ MK.registerTool = function (def) {
   var tool = {
     id: d.id, name: d.name, category: d.category, description: d.description, icon: d.icon,
     options: d.options || [], run: d.run, needsComp: d.needsComp !== false, dot: d.dot || null,
+    // Alt-click takes what the tool wrote off the selection (MK.remove): tools whose whole
+    // result is marked expressions on the selected properties and "<Tool> – …" controls.
+    removable: !!d.removable,
     openOptions: d.openOptions || null, api: d.api || {},
     kind: widget ? "widget" : "tool", span: widget ? [Math.round(d.span[0]), Math.round(d.span[1])] : [1, 1], build: widget ? d.build : null
   };
@@ -199,8 +202,9 @@ MK.makeContext = function (tool) {
   return ctx;
 };
 
+// warnings: what ctx.warn collected (also appended to the message).
 MK.toResult = function (r, ctx) {
-  var out = { ok: true, message: "", created: ctx.created };
+  var out = { ok: true, message: "", created: ctx.created, warnings: ctx.warnings.slice() };
   if (r && typeof r === "object") {
     out.ok = r.ok !== false;
     out.message = r.message === undefined ? "" : String(r.message);
@@ -212,20 +216,23 @@ MK.toResult = function (r, ctx) {
 
 // Runs a tool or library item like a button click: saved options, overridden by `options`
 // (not saved). Problems come back as {ok: false, message} and are shown with alert unless
-// `quiet` is set. Never throws.
-MK.run = function (id, options, quiet) {
+// `quiet` is set, and so is the message of a run that worked with warnings (what it skipped).
+// Never throws.
+// how.setControls: the options dialog's OK, whose values also go into controls the selection
+// already has (MK.controls.ensure).
+MK.run = function (id, options, quiet, how) {
   var r;
   try {
     if (typeof id === "string" && id.indexOf("lib:") === 0) r = MK.library.run(id);
-    else r = MK.runTool(id, options);
+    else r = MK.runTool(id, options, how);
   } catch (e) {
     r = { ok: false, message: MK.util.errText(e), created: [] };
   }
-  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  if ((!r.ok || (r.warnings && r.warnings.length)) && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
   return r;
 };
 
-MK.runTool = function (id, options) {
+MK.runTool = function (id, options, how) {
   var tool = MK.tools[id];
   if (!tool) return { ok: false, message: "\"" + id + "\" isn't a tool in this version of Motion Kit (" + MK.version + ").", created: [] };
   var opts = MK.options.merged(tool, options);
@@ -233,14 +240,65 @@ MK.runTool = function (id, options) {
   if (tool.needsComp && !ctx.comp) return { ok: false, message: tool.name + ": open a composition first.", created: [] };
   var r;
   app.beginUndoGroup(MK.NAME + ": " + tool.name);
+  MK.controls.overwrite = !!(how && how.setControls);
   try {
     r = MK.toResult(tool.run(ctx, opts), ctx);
   } catch (e) {
     r = { ok: false, message: e instanceof MK.UserError ? tool.name + ": " + e.message : tool.name + " failed: " + MK.util.errText(e), created: ctx.created };
   } finally {
+    MK.controls.overwrite = false;
     app.endUndoGroup();
   }
   return r;
+};
+
+// Alt-click on a removable tool: takes the expressions tool `id` wrote off the selected
+// properties (with none selected, off every property of the selected layers), then deletes its
+// "<Tool> – …" controls from the layers where none of them is left. One undo step. Expressions
+// Motion Kit didn't write, or another tool wrote, stay.
+MK.remove = function (id, quiet) {
+  var r, tool = MK.tools[id];
+  try {
+    r = MK.removeTool(tool);
+  } catch (e) {
+    r = { ok: false, message: (tool ? tool.name : id) + ": removing failed: " + MK.util.errText(e), created: [] };
+  }
+  if (!r.ok && r.message && !quiet) try { MK.prompts.alert(r.message); } catch (e2) {}
+  return r;
+};
+
+MK.removeTool = function (tool) {
+  var U = MK.util, X = MK.expr, ctx = MK.makeContext(tool);
+  var fail = function (msg) { return { ok: false, message: tool.name + ": " + msg, created: [] }; };
+  if (!ctx.comp) return fail("open a composition, then select the properties or layers to take " + tool.name + " off.");
+  var props = U.filter(ctx.props, function (p) { return p.canSetExpression && String(p.expression || "").split("\n")[0] === X.MARK + tool.id; });
+  if (!ctx.props.length) for (var l = 0; l < ctx.layers.length; l++) X.ofTool(ctx.layers[l], tool.id, props);
+  if (!props.length) {
+    if (ctx.props.length) return fail("the selected properties have no " + tool.name + " to remove.");
+    return fail(ctx.layers.length ? "the selected layers have no " + tool.name + " to remove." : "select the properties or layers to take " + tool.name + " off.");
+  }
+  var layers = {}, controls = 0, prefix = MK.controls.name(tool.name, "");
+  app.beginUndoGroup(MK.NAME + ": Remove " + tool.name);
+  try {
+    for (var i = 0; i < props.length; i++) {
+      props[i].expression = "";
+      var layer = MK.sel.layerOf(props[i]);
+      layers[layer.index] = layer;
+    }
+    for (var k in layers) {
+      if (!U.has(layers, k) || X.ofTool(layers[k], tool.id).length) continue;
+      var fx = MK.controls.fx(layers[k]);
+      for (var j = fx ? fx.numProperties : 0; j >= 1; j--) {
+        if (fx.property(j).name.indexOf(prefix) === 0) {
+          fx.property(j).remove();
+          controls++;
+        }
+      }
+    }
+  } finally {
+    app.endUndoGroup();
+  }
+  return { ok: true, message: tool.name + " removed from " + props.length + (props.length === 1 ? " property" : " properties") + (controls ? ", with its controls." : "."), created: [] };
 };
 
 // Runs tool `id`'s code inside another tool's or widget's run, with the same ctx (so one undo

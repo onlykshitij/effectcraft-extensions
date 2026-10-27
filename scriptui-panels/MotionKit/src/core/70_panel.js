@@ -86,6 +86,13 @@ MK.ui.startViews = function (host) {
 MK.ui.dist = function (a, b) { return Math.sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1])); };
 // Replaced by tests: how a button opens options, the Layout & Style dialog and the Add list.
 MK.ui.openOptions = function (id) { return MK.optionsDialog.open(id); };
+// "Bounce, Elastic and Loop": the tools Alt-click can remove, for messages.
+MK.ui.removableNames = function () {
+  var n = MK.util.map(MK.util.filter(MK.toolOrder, function (id) { return MK.tools[id].removable; }), function (id) { return MK.tools[id].name; });
+  return n.length > 1 ? n.slice(0, -1).join(", ") + " and " + n[n.length - 1] : n.join("");
+};
+// What Alt-click says on a tool or widget `name` that can't remove anything.
+MK.ui.altText = function (name) { return name + ": Alt-click removes what a tool added, and only " + MK.ui.removableNames() + " can do that."; };
 MK.ui.openLayoutDialog = function (panelIndex, tab) { return MK.layoutDialog.open(panelIndex, tab); };
 MK.ui.openAddList = function (panelIndex) {
   var D = MK.ui.buildAddList(panelIndex);
@@ -602,7 +609,8 @@ MK.ui.buildPanel = function (host, index, views) {
       else {
         cell = g.add("iconbutton", [r[0], r[1], r[0] + r[2], r[1] + r[3]]);
         cell.helpTip = look.name + " – " + look.description +
-          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") + (P.editing ? "\nDrag to reorder." : "");
+          (look.tool && MK.options.has(look.tool) ? "\nShift-click or right-click for options." : "") +
+          (look.tool && look.tool.removable ? "\nAlt-click removes it from the selected properties or layers." : "") + (P.editing ? "\nDrag to reorder." : "");
         cell.onDraw = paint;
         // What it shows only changes with the settings, which rebuild the panel.
         cell.mkLook = look;
@@ -712,10 +720,11 @@ MK.ui.buildPanel = function (host, index, views) {
 
   // The insertion slot (0..n) for a drop at a grid point, or -1 off the grid: before the item
   // under the pointer when it is in that item's left half, else after it. Over a hole, the
-  // nearest item decides.
+  // nearest item decides; over the "+" cell, the end.
   function slotAt(xy) {
-    var n = P.items().length, R = P.geo.rects, sp = P.sp;
+    var n = P.items().length, R = P.geo.rects, sp = P.sp, a = P.addCell ? R[n] : null;
     if (!n || xy[0] < -sp || xy[1] < -sp || xy[0] > P.geo.w + sp || xy[1] > P.geo.h + sp) return -1;
+    if (a && xy[0] >= a[0] && xy[0] < a[0] + a[2] && xy[1] >= a[1] && xy[1] < a[1] + a[3]) return n;
     var best = 0, bd = Infinity;
     for (var i = 0; i < n; i++) {
       var r = R[i], dx = Math.max(r[0] - xy[0], 0, xy[0] - r[0] - r[2]), dy = Math.max(r[1] - xy[1], 0, xy[1] - r[1] - r[3]);
@@ -771,13 +780,14 @@ MK.ui.buildPanel = function (host, index, views) {
       P.drag = null;
       return;
     }
-    if (t.mkRole === "part") {
+    // Alt-click on a widget part goes to the widget below, which explains as tools do.
+    if (t.mkRole === "part" && !e.altKey) {
       P.drag = { part: t, shift: opt };
       if (!opt && t.mkPress) t.mkPress(xy[0] - t.mkGX, xy[1] - t.mkGY);
       hold(!opt && !!t.mkDrag);
       return;
     }
-    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt };
+    P.drag = { from: i, start: xy, moved: false, slot: -1, options: opt, remove: !!e.altKey };
     hold(false);
   }
 
@@ -834,18 +844,23 @@ MK.ui.buildPanel = function (host, index, views) {
     }
     if (!xy || cellAt(xy) !== d.from) return;
     if (isWidget(d.from)) {
-      if (options && P.widgets[d.from].onShift) P.widgets[d.from].onShift();
+      var wd = P.widgets[d.from];
+      if (d.remove || e.altKey) MK.prompts.alert(MK.ui.altText(wd.tool.name));
+      else if (options && wd.onShift) wd.onShift();
       return;
     }
-    P.activate(d.from, options);
+    P.activate(d.from, options, d.remove || !!e.altKey);
   }
-  // Runs button i (or opens its options).
-  P.activate = function (i, options) {
+  // Runs button i, opens its options, or (remove: Alt-click) takes what it wrote off the
+  // selection. Alt-click on a tool that can't do that explains instead of running it.
+  P.activate = function (i, options, remove) {
     var item = P.items()[i];
     if (!item) return null;
-    var d = MK.describe(item.id, P.state.library), r = null;
+    var d = MK.describe(item.id, P.state.library), r = null, tool = MK.tools[item.id];
     if (d.missing) MK.prompts.alert("\"" + item.id + "\": " + d.description);
-    else if (options && MK.tools[item.id]) r = MK.ui.openOptions(item.id);
+    else if (remove && tool && tool.removable) r = MK.remove(item.id);
+    else if (remove) MK.prompts.alert(MK.ui.altText(d.name));
+    else if (options && tool) r = MK.ui.openOptions(item.id);
     else r = MK.run(item.id);
     P.refresh();
     return r;

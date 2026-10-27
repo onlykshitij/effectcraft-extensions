@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Ease Keyframes: influences and speeds land on the right sides of the selected keys; speeds are
 // multiples of each segment's average speed (signed per dimension, path speed when spatial); the
-// value follows the editor's cubic-bezier; no overshoot; the curve editor's handles drag through
+// value follows the editor's cubic-bezier; no overshoot; time-stretched layers (speeds in layer
+// time); the curve editor's handles drag through
 // synthetic mouse events; presets, fields, Copy from Selected Key, Reset, Apply; bad selections;
 // one undo step.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
@@ -95,6 +96,25 @@ p1.setValueAtTime(1, [25, 25]);
 keys([[rot, [1, 3]], [p1, [1]]]);
 r = MotionKit.run("easeKeys");
 T.check(r.ok && /Skipped 1/.test(r.message) && easeIs(ease(rot, 1, "out"), 0, 33.333), "a one-key property among others is skipped: " + r.message);
+
+// ---- time-stretched layers: EffectCraft measures ease speeds in layer time
+// (100 %/s average here, so the Linear speed is the stretch).
+var stretches = [200, 50];
+for (var q = 0; q < stretches.length; q++) {
+  var sl = T.solid(comp, "Stretch " + stretches[q], 20, 20), so2 = sl.transform.opacity;
+  sl.stretch = stretches[q];
+  so2.setValueAtTime(1, 0);
+  so2.setValueAtTime(2, 100);
+  keys([[so2, [1, 2]]]);
+  MotionKit.run("easeKeys", { outInfluence: 33.333, outSpeed: 1, inInfluence: 33.333, inSpeed: 1 });
+  var dev = 0;
+  for (var w = 1; w <= 2; w += 0.05) dev = Math.max(dev, Math.abs(so2.valueAtTime(w, false) - 100 * (w - 1)));
+  T.check(dev < 1e-3 && easeIs(ease(so2, 1, "out"), stretches[q], 33.333), "stretch " + stretches[q] + " %: Linear stays linear (speed " + ease(so2, 1, "out").speed + " per layer second, max deviation " + dev.toFixed(4) + ")");
+  keys([[so2, [1]]]);
+  var edS = MotionKit.tools.easeKeys.openOptions(true);
+  edS.btnCopy.notify("onClick");
+  T.check(edS.fields.outSpeed.text === "1" && edS.fields.inSpeed.text === "1", "and Copy from Selected Key reads it back as 1 x average");
+}
 
 // ---- the curve editor (built, not shown: a modal dialog blocks headless)
 MotionKit.options.save("easeKeys", { outInfluence: 33.333, outSpeed: 0, inInfluence: 33.333, inSpeed: 0 });

@@ -4,9 +4,13 @@
 // paste them onto every selected keyframe of every selected property, until the clipboard is
 // cleared (Shift-click > Clear Clipboard). Eases pasted onto a property with another number of
 // ease dimensions reuse the first dimension's ease; values only paste onto the same value type.
+// Speeds are kept as multiples of their segment's average speed (MK.anim.avgSpeed) and pasted
+// as that multiple of the target segment's, so an ease fits any distance, direction and unit.
 
 (function () {
-  var NAME = "Ease Copy", KEY = "easeCopy", U = MK.util, BEZ = KeyframeInterpolationType.BEZIER;
+  var NAME = "Ease Copy", KEY = "easeCopy", U = MK.util, A = MK.anim, BEZ = KeyframeInterpolationType.BEZIER;
+  // Clipboard version 2 adds `ratio` to each ease; older clipboards paste their raw speeds.
+  var VERSION = 2;
 
   function clip() {
     var c = MK.settings.get(KEY, null);
@@ -14,13 +18,44 @@
   }
   function describe(c) { return c ? "keyframe " + c.key + " of " + c.from : "empty"; }
 
+  // The segment on one side of key i ([a, b]), or null at the first key's in or the last's out.
+  function segment(p, i, inSide) {
+    if (inSide) return i > 1 ? [i - 1, i] : null;
+    return i < p.numKeys ? [i, i + 1] : null;
+  }
+  // Sets each ease's ratio: its speed over the segment's average speed in that dimension. A
+  // dimension that doesn't move takes the first ratio found; with none (no segment, or nothing
+  // moves) ratios are null and the raw speed is pasted.
+  function addRatios(eases, p, seg) {
+    var avg = seg && MK.sel.isNumeric(p) ? A.avgSpeed(p, seg[0], seg[1]) : [], first = null;
+    for (var d = 0; d < eases.length; d++) {
+      eases[d].ratio = d < avg.length && Math.abs(avg[d]) > 1e-9 ? eases[d].speed / avg[d] : null;
+      if (first === null) first = eases[d].ratio;
+    }
+    for (var e = 0; e < eases.length; e++) if (eases[e].ratio === null) eases[e].ratio = first;
+    return eases;
+  }
+  // The eases for one side of key i of p: each ratio times the target segment's average speed
+  // (one per ease dimension of p, reusing the first copied ease), or the raw speeds for a
+  // clipboard without ratios (older ones, Key Copy/Paste's Shift-Paste) or no segment there.
+  function scaled(eases, p, i, inSide, relative) {
+    var seg = segment(p, i, inSide);
+    if (!relative || !seg || !MK.sel.isNumeric(p)) return eases;
+    var avg = A.avgSpeed(p, seg[0], seg[1]);
+    return U.map(avg, function (v, d) {
+      var e = eases[d < eases.length ? d : 0];
+      return { speed: U.isNum(e.ratio) && U.isNum(v) ? e.ratio * v : e.speed, influence: e.influence };
+    });
+  }
+
   function copy(ctx, props) {
     var p = props[0], i = MK.sel.selectedKeys(p)[0], k = MK.keys.read(p, i);
     MK.settings.set(KEY, {
-      from: MK.sel.label(p), key: i, valueType: p.propertyValueType,
+      version: VERSION, from: MK.sel.label(p), key: i, valueType: p.propertyValueType,
       // Values of numbers, points and colours only: other types don't survive JSON.
       value: MK.sel.isNumeric(p) ? k.value : null,
-      inEase: k.inEase, outEase: k.outEase, inInterp: k.inInterp, outInterp: k.outInterp,
+      inEase: addRatios(k.inEase, p, segment(p, i, true)), outEase: addRatios(k.outEase, p, segment(p, i, false)),
+      inInterp: k.inInterp, outInterp: k.outInterp,
       expression: p.canSetExpression ? String(p.expression || "") : ""
     });
     var more = props.length > 1 ? " (keyframes were selected on " + props.length + " properties; this is the first)" : "";
@@ -30,7 +65,7 @@
   // Pastes clipboard `c` (the copy() form) onto the selected keys of `props`. `name` starts the
   // message (default "Ease Copy"); the Key Copy/Paste widget's Shift-Paste uses this too.
   function paste(ctx, c, o, props, name) {
-    var keys = 0, wrongType = 0, noInterp = 0, exprs = 0;
+    var keys = 0, wrongType = 0, noInterp = 0, exprs = 0, rel = c.version >= VERSION;
     for (var n = 0; n < props.length; n++) {
       var p = props[n], sel = MK.sel.selectedKeys(p);
       var canEase = p.isInterpolationTypeValid(BEZ);
@@ -41,7 +76,7 @@
       for (var j = 0; j < sel.length; j++) {
         var i = sel[j], inT = p.keyInInterpolationType(i), outT = p.keyOutInterpolationType(i);
         if (o.values && sameType) p.setValueAtKey(i, c.value);
-        if (o.easing && canEase) MK.keys.setEase(p, i, c.inEase, c.outEase);
+        if (o.easing && canEase) MK.keys.setEase(p, i, scaled(c.inEase, p, i, true, rel), scaled(c.outEase, p, i, false, rel));
         if (o.interp && canInterp) p.setInterpolationTypeAtKey(i, c.inInterp, c.outInterp);
         // setTemporalEaseAtKey makes both sides Bezier: without Interpolation, put the types back.
         else if (o.easing && canEase) p.setInterpolationTypeAtKey(i, inT, outT);

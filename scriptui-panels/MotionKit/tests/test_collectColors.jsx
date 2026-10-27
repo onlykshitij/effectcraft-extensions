@@ -3,7 +3,7 @@
 // solid colour, Color Controls), gradients skipped and reported, merging within the tolerance
 // (and not at 0), quantising with Step, hue order with greys last, the "Palette" shape layer
 // (40 px squares, 8 px apart, 8 to a row from the top-left) and null, outputs off, all layers
-// when none are selected, refusals, one Undo.
+// when none are selected, refusals (naming the comp, and skipped gradients), one Undo.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var SH = MotionKit.helpers.shapes;
 var UNDO = app.findMenuCommandId("Undo");
@@ -123,7 +123,14 @@ app.executeCommand(UNDO);
 var empty = comp.layers.addNull();
 T.select(comp, [empty], []);
 r = MotionKit.run("collectColors");
-T.check(!r.ok && /found no colours in the selected layers/.test(T.lastAlert()), "a plain null: refused");
+T.check(!r.ok && /found no colours in the selected layers\.$/.test(T.lastAlert()), "a plain null: refused");
+// Nothing selected and only a gradient: the message names the comp and the skipped gradient.
+var gc = T.comp("Gradient Only");
+SH.inner(gc.layers.addShape().property("ADBE Root Vectors Group").addProperty("ADBE Vector Group")).addProperty("ADBE Vector Graphic - G-Fill");
+T.select(gc, [], []);
+r = MotionKit.run("collectColors");
+T.check(!r.ok && /found no colours in the comp, only 1 gradient \(gradient stops aren't collected\)\./.test(T.lastAlert()), "nothing selected, only a gradient: " + T.lastAlert());
+comp.openInViewer();
 T.select(comp, picked, []);
 r = MotionKit.run("collectColors", { shapes: false, controls: false });
 T.check(!r.ok && /at least one output/.test(r.message) && !paletteNull() && !paletteShapes(), "both outputs off: refused");

@@ -24,7 +24,14 @@
     options: [
       { key: "point", label: "Anchor point", type: "dropdown", "default": "c", items: U.map(KEYS, function (k) { return [k, LABEL[k]]; }) }
     ],
-    run: function (ctx, o) { return MK.callTool("moveAnchor", ctx, { point: o.point }); },
+    run: function (ctx, o) {
+      // With shape groups selected Move Anchor Point moves only those: say which layers it skips.
+      var groups = U.filter(ctx.groups, MK.shapes.isGroup), own = {}, left = 0, i;
+      for (i = 0; i < groups.length; i++) own[MK.sel.layerOf(groups[i]).index] = true;
+      for (i = 0; groups.length && i < ctx.layers.length; i++) if (!own[ctx.layers[i].index]) left++;
+      if (left) ctx.warn("Skipped " + left + (left === 1 ? " selected layer" : " selected layers") + ": with shape groups selected, only the groups' anchors move.");
+      return MK.callTool("moveAnchor", ctx, { point: o.point });
+    },
     build: function (w) {
       var gap = Math.max(3, Math.round(w.w * 0.05)), side = Math.min(w.w, w.h);
       var sq = Math.max(8, Math.floor((side - 2 * Math.round(side * 0.08) - 2 * gap) / 3));

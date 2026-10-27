@@ -83,10 +83,16 @@ MK.controls = (function () {
     return null;
   };
   // The control called `name`; created with `value` when the layer has none, so one control set
-  // drives every property a tool touched on that layer. Returns the effect.
+  // drives every property a tool touched on that layer. An existing control keeps its value,
+  // except during a run from the options dialog's OK (overwrite, set by MK.runTool), whose
+  // values the user just chose. Returns the effect.
+  C.overwrite = false;
   C.ensure = function (layer, matchName, name, value) {
     var e = C.find(layer, name, matchName);
-    if (e) return e;
+    if (e) {
+      if (C.overwrite && value !== undefined && value !== null) C.set(e, value);
+      return e;
+    }
     var fx = C.fx(layer);
     if (!fx) MK.fail(layer.name + " can't take effects, so it can't hold Motion Kit controls.");
     e = fx.addProperty(matchName);
@@ -133,6 +139,17 @@ MK.expr = (function () {
     return e.indexOf(X.MARK + (toolId || "")) === 0;
   };
   X.hasForeign = function (prop) { return !!prop.expression && !X.isOurs(prop); };
+  // Every property under `group` (a layer or property group) whose expression tool `toolId`
+  // wrote (its first line is exactly the mark), added to `out` (returned).
+  X.ofTool = function (group, toolId, out) {
+    out = out || [];
+    for (var i = 1; i <= group.numProperties; i++) {
+      var p = group.property(i);
+      if (p instanceof PropertyGroup) X.ofTool(p, toolId, out);
+      else if (p instanceof Property && p.canSetExpression && String(p.expression || "").split("\n")[0] === X.MARK + toolId) out.push(p);
+    }
+    return out;
+  };
   // A JavaScript string literal, for names and text inside expressions.
   X.str = function (s) { return JSON.stringify(String(s)); };
   // Which properties a tool may write: those that can take an expression, minus (when the user
@@ -153,10 +170,21 @@ MK.expr = (function () {
   };
   X.set = function (prop, toolId, body) { prop.expression = X.make(toolId, body); };
   // "Bounce added to 2 properties. Skipped 1 without two keyframes. Kept 1 existing expression."
-  X.report = function (toolName, applied, invalid, kept, needs) {
-    var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties.");
-    if (invalid) s += " Skipped " + invalid + " without " + needs + ".";
-    if (kept) s += " Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions.");
+  // resting: how many of the applied properties stop at their last keyframe (MK.keys.atRest),
+  // for tools that carry the arriving speed on; linear: how many last keyframes were made to
+  // arrive Linear (MK.keys.offerLinearArrival). With ctx, the skipped, kept and stopped notes
+  // go through ctx.warn, so the panel shows them although the run worked.
+  X.report = function (toolName, applied, invalid, kept, needs, resting, linear, ctx) {
+    var s = toolName + " added to " + applied + (applied === 1 ? " property." : " properties."), notes = [];
+    if (invalid) notes.push("Skipped " + invalid + " without " + needs + ".");
+    if (kept) notes.push("Kept " + kept + (kept === 1 ? " existing expression." : " existing expressions."));
+    if (resting) notes.push((resting === applied ? (applied === 1 ? "It stops" : "They stop") : resting + " of them stop") +
+      " at the last keyframe (eased or Hold), so nothing moves after it: make that keyframe Linear or ease it less.");
+    if (linear) s += " Made " + (linear === 1 ? "one last keyframe" : linear + " last keyframes") + " arrive Linear.";
+    for (var i = 0; i < notes.length; i++) {
+      if (ctx) ctx.warn(notes[i]);
+      else s += " " + notes[i];
+    }
     return s;
   };
   // decide() then set() on each: body is a string or function(prop) -> string.
@@ -263,10 +291,23 @@ MK.space = (function () {
   S.fromWorld = function (layer, p, t) { return convert(layer, "fromWorld", [p], tm(layer, t))[0]; };
   function tm(layer, t) { return t === undefined ? layer.containingComp.time : t; }
 
+  // Cameras and lights: always 3D (threeDLayer is undefined on them), with no anchor point or size.
+  S.isCameraOrLight = function (layer) {
+    return (typeof CameraLayer !== "undefined" && layer instanceof CameraLayer) || (typeof LightLayer !== "undefined" && layer instanceof LightLayer);
+  };
+  S.is3D = function (layer) { return !!layer.threeDLayer || S.isCameraOrLight(layer); };
+
   // True when the layer and all its parents are 2D: then layer -> comp is affine.
   S.is2D = function (layer) {
-    for (var l = layer, n = 0; l && n < 200; l = l.parent, n++) if (l.threeDLayer) return false;
+    for (var l = layer, n = 0; l && n < 200; l = l.parent, n++) if (S.is3D(l)) return false;
     return true;
+  };
+
+  // The anchor point at comp time t; [0, 0, 0] (the layer's origin) for cameras and lights,
+  // which have none.
+  S.anchor = function (layer, t) {
+    var ap = layer.transform.anchorPoint;
+    return ap ? ap.valueAtTime(tm(layer, t), false) : [0, 0, 0];
   };
 
   // The 2D affine matrix layer -> comp at time t (only for S.is2D layers).
@@ -296,7 +337,7 @@ MK.space = (function () {
     var r = null;
     try { if (layer.sourceRectAtTime) r = layer.sourceRectAtTime(tm(layer, t), !!extents); } catch (e) {}
     if (!r) {
-      var a = layer.transform.anchorPoint.valueAtTime(tm(layer, t), false);
+      var a = S.anchor(layer, t);
       return [[a[0], a[1], 0], [a[0], a[1], 0], [a[0], a[1], 0], [a[0], a[1], 0]];
     }
     var x0 = r.left, y0 = r.top, x1 = r.left + r.width, y1 = r.top + r.height;
@@ -307,7 +348,7 @@ MK.space = (function () {
   };
   // The anchor point in comp space (where the layer "is").
   S.anchorInComp = function (layer, t) {
-    return S.toComp(layer, layer.transform.anchorPoint.valueAtTime(tm(layer, t), false), t);
+    return S.toComp(layer, S.anchor(layer, t), t);
   };
   // A comp-space point in the layer's parent space (the space its Position is in).
   S.compToParent = function (layer, p, t) {
@@ -354,6 +395,44 @@ MK.keys = (function () {
       k.spatialAutoBezier = prop.keySpatialAutoBezier(i);
     }
     return k;
+  };
+  // True when key i arrives (arriving) or leaves with no speed: Hold, or Bezier with every ease
+  // speed 0 (Easy Ease). Tools that carry the speed on past the key have nothing to use there.
+  // Also true when the segment on that side holds (the key before arriving holds its value) or
+  // doesn't change the value.
+  K.atRest = function (prop, i, arriving) {
+    var j = arriving ? i - 1 : i + 1, H = KeyframeInterpolationType.HOLD;
+    if (j >= 1 && j <= prop.numKeys) {
+      if ((arriving ? prop.keyOutInterpolationType(j) : prop.keyInInterpolationType(j)) === H) return true;
+      if (JSON.stringify(prop.keyValue(i)) === JSON.stringify(prop.keyValue(j))) return true;
+    }
+    return K.easedStop(prop, i, arriving) || (arriving ? prop.keyInInterpolationType(i) : prop.keyOutInterpolationType(i)) === H;
+  };
+  // Key i's own side is Bezier with every ease speed 0 (Easy Ease): making that side Linear
+  // gives it the segment's speed.
+  K.easedStop = function (prop, i, arriving) {
+    if ((arriving ? prop.keyInInterpolationType(i) : prop.keyOutInterpolationType(i)) !== KeyframeInterpolationType.BEZIER) return false;
+    var e = arriving ? prop.keyInTemporalEase(i) : prop.keyOutTemporalEase(i);
+    for (var k = 0; k < e.length; k++) if (Math.abs(e[k].speed) > 1e-6) return false;
+    return true;
+  };
+  // Asks to make the last keyframe of each property that eases to a stop (Bezier, speed 0)
+  // arrive Linear, so a tool that carries the arriving speed on has one to use. Hold arrivals
+  // are left alone: the value jumps there. Returns how many keyframes it changed.
+  K.offerLinearArrival = function (props, toolName) {
+    // Only where a Linear arrival brings speed back: not after a Hold or an unchanged value.
+    var eased = MK.util.filter(props, function (p) {
+      var n = p.numKeys;
+      return K.easedStop(p, n, true) && p.keyOutInterpolationType(n - 1) !== KeyframeInterpolationType.HOLD && JSON.stringify(p.keyValue(n)) !== JSON.stringify(p.keyValue(n - 1));
+    });
+    if (!eased.length) return 0;
+    var what = eased.length === 1 ? MK.sel.label(eased[0]) + " eases to a stop at its last keyframe" : eased.length + " properties ease to a stop at their last keyframe";
+    if (!MK.prompts.confirm(toolName + ": " + what + ", so there's no speed left to carry on. Make that keyframe arrive Linear?")) return 0;
+    for (var i = 0; i < eased.length; i++) {
+      var n = eased[i].numKeys;
+      eased[i].setInterpolationTypeAtKey(n, KeyframeInterpolationType.LINEAR, eased[i].keyOutInterpolationType(n));
+    }
+    return eased.length;
   };
   K.readAll = function (prop) {
     var out = [];
@@ -415,12 +494,27 @@ MK.keys = (function () {
     }
     return ks.length;
   };
+  // True for the ease EffectCraft keeps on a key side that was never eased: speed 0, 100 / 6 %.
+  function neverEased(eases) {
+    for (var d = 0; d < eases.length; d++) if (Math.abs(eases[d].speed) > 1e-9 || Math.abs(eases[d].influence - 100 / 6) > 1e-6) return false;
+    return true;
+  }
   // Sets both interpolation types of key i when the property takes them; false when it can't.
   // Only the types change: EffectCraft keeps a key's temporal ease while it is Linear or Hold,
   // so switching back to Bezier brings the ease back (setTemporalEaseAtKey would overwrite it).
+  // A Linear side that was never eased would come back with that default and stop at the key:
+  // turning both sides Bezier, it gets the ease it showed while Linear, so the motion keeps.
   K.setInterp = function (prop, i, inType, outType) {
     if (!prop.isInterpolationTypeValid(inType) || !prop.isInterpolationTypeValid(outType)) return false;
+    var BEZ = KeyframeInterpolationType.BEZIER, LIN = KeyframeInterpolationType.LINEAR, bez = inType === BEZ && outType === BEZ;
+    var wasIn = bez && prop.keyInInterpolationType(i) === LIN ? prop.keyInTemporalEase(i) : null;
+    var wasOut = bez && prop.keyOutInterpolationType(i) === LIN ? prop.keyOutTemporalEase(i) : null;
     prop.setInterpolationTypeAtKey(i, inType, outType);
+    if (wasIn || wasOut) {
+      var inE = prop.keyInTemporalEase(i), outE = prop.keyOutTemporalEase(i);
+      var fixIn = wasIn && neverEased(inE), fixOut = wasOut && neverEased(outE);
+      if (fixIn || fixOut) prop.setTemporalEaseAtKey(i, K.fit(fixIn ? wasIn : inE, inE.length), K.fit(fixOut ? wasOut : outE, outE.length));
+    }
     return true;
   };
   // Removes keys by 1-based index (any order).

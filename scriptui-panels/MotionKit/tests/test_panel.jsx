@@ -128,6 +128,13 @@ T.mouse(W5, P5.addCell, "mousedown", 10, 10);
 T.mouse(W5, P5.addCell, "mouseup", 10, 10);
 T.check(D && U.indexOf(D.ids, rmId) >= 0 && U.indexOf(D.ids, "bounce") < 0, "the Add list has what the panel lacks: " + D.ids.join(","));
 T.check(P5.items().length === n0 && P5.items()[n0 - 1].id === rmId, "+ adds the chosen item at the end");
+// Dropping on the + cell (the start of a row below the last item) puts the item last.
+var firstId = P5.items()[0].id;
+T.mouse(W5, P5.cells[0], "mousedown", 10, 10);
+T.mouse(W5, P5.addCell, "mousemove", 10, 10);
+T.check(P5.drag.slot === n0, "over the + cell the drop slot is the end (" + P5.drag.slot + " of " + n0 + ")");
+T.mouse(W5, P5.addCell, "mouseup", 10, 10);
+T.check(P5.items()[n0 - 1].id === firstId && P5.items().length === n0, "dropping on the + cell puts " + firstId + " last");
 var D1 = UI.buildAddList(0);
 T.check(U.indexOf(D1.ids, "ease") >= 0 && U.indexOf(D1.ids, "anchor") >= 0 && U.indexOf(D1.ids, "bounce") < 0 && D1.list.items[U.indexOf(D1.ids, "ease")].text === "Widget: Ease", "panel 1's Add list offers the widgets");
 T.mouse(W5, P5.pencil, "click", 5, 5);

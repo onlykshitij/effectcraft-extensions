@@ -4,7 +4,8 @@
 // from the centre, seeded random, or selection order). Item k of the order is in step group
 // g = floor(k / group) ("group" items share each step); from the centre, k is the distance from
 // the middle item(s) instead, so both sides move alike. With G the last group, the span is
-// step * G frames and group g sits span * curve(g / G) frames, rounded to whole frames, after
+// step * G frames and group g sits span * curve(g / G) frames, rounded to whole frames (halves
+// away from zero, so a negative step mirrors the positive one), after
 // group 0 (linear: step * g). Group 0 takes the time of the first item in the order, or from
 // the centre of the middle item (the first of the two when the count is even). A layer's time
 // is its in-point; a keyframe item's time is its earliest selected keyframe.
@@ -17,6 +18,8 @@
     easeOut: function (t) { return 1 - (1 - t) * (1 - t); },
     easeInOut: function (t) { return t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t); }
   };
+  // Rounds to a whole number of frames, halves away from zero (Math.round takes -0.5 to 0).
+  function whole(v) { return v < 0 ? -Math.round(-v) : Math.round(v); }
   var ORDER_TEXT = { topDown: "top to bottom", bottomUp: "bottom to top", centre: "from the centre", random: "random", selection: "selection order" };
 
   // The step group of each of n items in order: floor(k / group), with k the distance from the
@@ -104,7 +107,7 @@
       var n = list.length, g = groups(n, o.group, o.order === "centre"), last = Math.max.apply(null, g);
       var base = list[o.order === "centre" ? Math.floor((n - 1) / 2) : 0].time, curve = CURVES[o.curve], moved = 0;
       for (var i = 0; i < n; i++) {
-        var it = list[i], delta = base + (last ? Math.round(o.step * last * curve(g[i] / last)) : 0) * ctx.frame - it.time;
+        var it = list[i], delta = base + (last ? whole(o.step * last * curve(g[i] / last)) : 0) * ctx.frame - it.time;
         if (Math.abs(delta) < 1e-9) continue;
         if (keys) {
           for (var q = 0; q < it.props.length; q++) A.move(it.props[q], MK.sel.selectedKeys(it.props[q]), function (k) { return k.time + delta; });

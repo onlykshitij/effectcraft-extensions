@@ -52,8 +52,16 @@
         }
         for (k = 0; k < (r.skipped || []).length; k++) ctx.warn(r.skipped[k]);
         made++;
-        if (o.source === "delete") L.remove();
-        else L.enabled = false;
+        if (o.source === "delete") {
+          // Layers parented to the source follow the new shape layer instead: the engine gives it
+          // the source's transform, so the same layer space, and no jump.
+          var to = layerById(ctx.comp, r.layers[0]);
+          for (k = 1; to && k <= ctx.comp.numLayers; k++) {
+            var c = ctx.comp.layer(k);
+            if (c.parent && c.parent.id === L.id) c.setParentWithJump(to);
+          }
+          L.remove();
+        } else L.enabled = false;
       }
       if (!made) ctx.fail("none of the selected layers is vector footage (SVG, PDF or Illustrator): " + skipped.join(", ") + ".");
       return ctx.done("Converted " + made + (made === 1 ? " layer" : " layers") + " to shapes." + (skipped.length ? " Skipped (not vector footage): " + skipped.join(", ") + "." : ""));

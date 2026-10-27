@@ -163,6 +163,15 @@ T.check(opened.pop() === "bounce", "Shift-click opens the options");
 T.mouse(W1, P1.cells[1], "mousedown", 10, 10, { button: 2 });
 T.mouse(W1, P1.cells[1], "mouseup", 10, 10, { button: 2 });
 T.check(opened.pop() === "loop", "right-click opens the options");
+// Alt-click on Bounce, Elastic or Loop takes what they wrote off the selection (here there's no
+// comp, so it says what to select); on any other tool it explains instead of running it.
+T.mouse(W1, P1.cells[0], "mousedown", 10, 10, { altKey: true });
+T.mouse(W1, P1.cells[0], "mouseup", 10, 10, { altKey: true });
+T.check(/^Elastic: open a composition, then select the properties or layers to take Elastic off/.test(T.lastAlert()), "Alt-click on Elastic removes instead of running: " + T.lastAlert());
+T.check(/Alt-click removes it/.test(P1.cells[0].helpTip) && !/Alt-click/.test(P1.cells[3].helpTip), "removable tools say so in their help tip");
+T.mouse(W1, P1.cells[3], "mousedown", 10, 10, { altKey: true });
+T.mouse(W1, P1.cells[3], "mouseup", 10, 10, { altKey: true });
+T.check(/^Ease Keyframes: Alt-click removes what a tool added, and only Bounce, Elastic and Loop In\/Out can do that/.test(T.lastAlert()), "Alt-click on another tool explains instead of running it: " + T.lastAlert());
 // A button for a tool this version doesn't have (a layout from a newer version).
 L.save(L.addItem(L.get(), 0, "futureTool"));
 MotionKit.__tick(P1.key);
@@ -227,8 +236,8 @@ T.check(!MotionKit.__tick(key4) && wins[3].mkPanel.closed, "onClose cancels the 
 
 // ---- the options dialog (built, not shown: a modal show() blocks headless)
 var od = MotionKit.optionsDialog.build(MotionKit.tools.bounce, MotionKit.options.get("bounce"));
-T.check(od.inputs.amplitude.control.text === "0.7" && od.inputs.jumpInOut.control.type === "checkbox", "fields show the saved values");
-od.inputs.amplitude.control.text = "5";
+T.check(od.inputs.hopHeight.control.text === "20" && od.inputs.jumpInOut.control.type === "checkbox", "fields show the saved values");
+od.inputs.hopHeight.control.text = "500";
 T.alerts = [];
 var okBtn = null, saveBtn = null, defBtn = null;
 (function walk(x) {
@@ -238,11 +247,11 @@ var okBtn = null, saveBtn = null, defBtn = null;
   for (var i = 0; i < (x.children || []).length; i++) walk(x.children[i]);
 })(od.win);
 okBtn.notify("onClick");
-T.check(od.action === null && /Amplitude must be from 0 to 1/.test(T.lastAlert()), "OK with a bad value explains and stays open");
-od.inputs.amplitude.control.text = "0.4";
+T.check(od.action === null && /Amplitude must be from 0 to 200/.test(T.lastAlert()), "OK with a bad value explains and stays open");
+od.inputs.hopHeight.control.text = "35";
 od.inputs.jumpInOut.control.value = true;
 okBtn.notify("onClick");
-T.check(od.action === "run" && MotionKit.options.get("bounce").amplitude === 0.4 && MotionKit.options.get("bounce").jumpInOut === true, "OK saves the options and asks to run");
+T.check(od.action === "run" && MotionKit.options.get("bounce").hopHeight === 35 && MotionKit.options.get("bounce").jumpInOut === true, "OK saves the options and asks to run");
 var od2 = MotionKit.optionsDialog.build(MotionKit.tools.loop, MotionKit.options.get("loop"));
 od2.inputs.type.control.selection = 1;
 od2.inputs.side.control.selection = 2;
@@ -250,7 +259,7 @@ od2.inputs.side.control.selection = 2;
 saveBtn.notify("onClick");
 T.check(od2.action === "save" && MotionKit.options.get("loop").type === "pingpong" && MotionKit.options.get("loop").side === "both", "Save keeps dropdown choices without running");
 defBtn.notify("onClick");
-T.check(od.inputs.amplitude.control.text === "0.7" && od.inputs.jumpInOut.control.value === false, "Defaults resets the fields");
+T.check(od.inputs.hopHeight.control.text === "20" && od.inputs.jumpInOut.control.value === false, "Defaults resets the fields");
 
 // ---- the Layout & Style dialog (built, not shown)
 var stored = JSON.stringify(L.state());
@@ -421,5 +430,21 @@ for (var ii = 0; ii < icons.length; ii++) {
   for (var pi = 0; pi < g.pts.length; pi++) if (!(g.pts[pi][0] >= 10 && g.pts[pi][0] <= 34 && g.pts[pi][1] >= 20 && g.pts[pi][1] <= 44)) ok = false;
   T.check(ok, "icon " + icons[ii][0] + " draws inside its 24 px square (" + g.ops.length + " paths)");
 }
+
+// ---- a run that worked with warnings shows its message (what it skipped); quiet runs don't
+MotionKit.registerTool({
+  id: "warnProbe", name: "Warn Probe", category: "Rig", description: "Warns when asked.", icon: ["M3 3 H21"], needsComp: false,
+  options: [{ key: "warn", label: "Warn", type: "checkbox", "default": true }],
+  run: function (ctx, o) {
+    if (o.warn) ctx.warn("Skipped 1 thing.");
+    return ctx.done("Warn Probe: did 2 things.");
+  }
+});
+T.alerts = [];
+var wr = MotionKit.run("warnProbe");
+T.check(wr.ok && wr.warnings.length === 1 && T.alerts.length === 1 && T.alerts[0] === "Warn Probe: did 2 things.\nSkipped 1 thing.", "a run that worked with a warning shows its message: " + T.alerts.join(" // "));
+MotionKit.run("warnProbe", null, true);
+MotionKit.run("warnProbe", { warn: false });
+T.check(T.alerts.length === 1, "quiet runs, and runs without warnings, show nothing");
 
 T.done();

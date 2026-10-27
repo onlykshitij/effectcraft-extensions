@@ -36,7 +36,8 @@
 
   var SOLVE = [
     "function mkF(v, d) { v = Number(v); return isFinite(v) ? v : d; }",
-    "function mkPos(L) { var p = L.toComp(L.anchorPoint.value); return [mkF(p[0], 0), mkF(p[1], 0)]; }",
+    // Cameras and lights have no anchor point, so mkPos uses their origin.
+    "function mkPos(L) { var p = L.toComp(L.anchorPoint ? L.anchorPoint.value : [0, 0, 0]); return [mkF(p[0], 0), mkF(p[1], 0)]; }",
     "function mkClamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }",
     "function mkSolve(mkK) {",
     "  var mkRootL = " + k("Root", LC) + ", mkCtrlL = " + k("Controller", LC) + ";",

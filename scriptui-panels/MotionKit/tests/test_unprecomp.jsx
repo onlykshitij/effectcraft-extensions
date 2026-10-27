@@ -2,8 +2,8 @@
 // Unprecomp: the precomp's layers land directly above the precomp layer in their order, under a
 // "<Precomp> Transform" null that carries its transform (keys too), parent and timing; parenting
 // and track mattes inside are kept; times shift by the start time and are trimmed to the in and
-// out points; nothing changes on screen (rendered pixels compared); the warnings; delete; bad
-// selections; one Undo.
+// out points; nothing changes on screen (rendered pixels compared); the warnings; delete (layers
+// parented to the precomp layer follow the null); bad selections; one Undo.
 // Pixels: the comp before (a duplicate made first) and after are nested in a viewer comp and read
 // with the expression sampleImage, which renders them; tiles of 10 x 10 px are compared.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
@@ -147,5 +147,25 @@ var n3 = r.created[0];
 T.check(r.ok && n3.threeDLayer && T.near(n3.transform.property("ADBE Rotate Y").value, 35) && T.near(n3.transform.position.value, [260, 150, 80]), "a 3D precomp layer gives a 3D null with its 3D transform");
 T.check(m3.layer("Fill").threeDLayer && m3.layer("PNull").threeDLayer && m3.layer("Kid").threeDLayer && m3.layer("Matte").threeDLayer, "the copied layers become 3D");
 looksSame(ref3, m3, [1], "the 3D comp renders the same pixels");
+
+// ---- delete with a layer parented to the moving precomp layer: it follows the null instead
+var mk = T.comp("Main Kids", 500, 300, 3, 25);
+T.solid(mk, "Bg", 500, 300, [0.15, 0.15, 0.15]);
+var pk = mk.layers.add(pre);
+pk.transform.position.setValueAtTime(0, [150, 150]);
+pk.transform.position.setValueAtTime(2, [350, 150]);
+var tag = T.solid(mk, "Tag", 20, 20, [1, 1, 0]);
+tag.parent = pk;
+tag.transform.position.setValue([100, 100]);
+var refk = mk.duplicate();
+mk.openInViewer();
+T.select(mk, [pk], []);
+r = MotionKit.run("unprecomp", { original: "delete" });
+T.check(r.ok && tag.parent && tag.parent.id === r.created[0].id && T.near(tag.transform.position.value, [100, 100]), "Tag, parented to the deleted precomp layer, now follows the null, its position unchanged");
+app.executeCommand(app.findMenuCommandId("Undo"));
+T.check(mk.numLayers === 3 && tag.parent && tag.parent.name === "Pre", "one Undo brings the precomp layer back, with Tag parented to it");
+T.select(mk, [mk.layer("Pre")], []);
+r = MotionKit.run("unprecomp", { original: "delete" });
+looksSame(refk, mk, [0, 1, 2], "Tag keeps moving with it");
 
 T.done();

@@ -30,6 +30,7 @@
     id: "loop",
     name: NAME,
     category: "Animate",
+    removable: true,
     description: "Repeats the keyframes before the first key, after the last, or both.",
     icon: [{ d: "A12 12 7 -60 210", w: 1.8 }, { d: HEAD, fill: "accent" }],
     options: [
@@ -42,7 +43,7 @@
       var props = MK.util.filter(MK.sel.keyed(ctx.props, 2), function (p) { return p.canSetExpression && (!numericOnly || MK.sel.isNumeric(p)); });
       if (!props.length) ctx.fail("select one or more properties with at least two keyframes" + (numericOnly ? " and a numeric value (for " + o.type + ")." : "."));
       var r = MK.expr.applyAll(ctx, props, "loop", body(o));
-      return ctx.done(MK.expr.report(NAME, r.applied.length, ctx.props.length - props.length, r.skipped.length, numericOnly ? "two keyframes and a numeric value" : "two keyframes"));
+      return ctx.done(MK.expr.report(NAME, r.applied.length, ctx.props.length - props.length, r.skipped.length, numericOnly ? "two keyframes and a numeric value" : "two keyframes", 0, 0, ctx));
     }
   });
 })();

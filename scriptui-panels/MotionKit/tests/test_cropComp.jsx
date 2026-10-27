@@ -2,7 +2,8 @@
 // Crop Comp: the new comp is the union of the layers' comp-space bounds over their in-out range
 // (checked against EffectCraft's own sourcePointToComp at every frame), padding and even
 // rounding, nothing moves (rendered pixels compared, and layer corners in comp space), a parent
-// outside the selection, bad selections, one Undo.
+// outside the selection (noted as animated when anything up its chain moves), bad selections,
+// one Undo.
 // Pixels: the comp before (a duplicate made first) and after are nested in a viewer comp and read
 // with the expression sampleImage, which renders them; tiles of 10 x 10 px are compared.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
@@ -171,5 +172,33 @@ T.select(comp, [comp.layer("D Crop")], []);
 r = MotionKit.run("cropComp", { padding: 3 });
 T.check(r.ok && r.created[1].width % 2 === 0 && r.created[1].height % 2 === 0, "even rounding: " + r.created[1].width + " x " + r.created[1].height);
 T.check(r.created[1].name === "D Crop Crop", "cropping a crop names it after that layer");
+
+// ---- the note about a parent's animation looks up the whole chain, keys and expressions
+var mover = comp.layers.addNull();
+mover.name = "Mover";
+mover.transform.position.setValueAtTime(0, [100, 100]);
+mover.transform.position.setValueAtTime(2, [300, 100]);
+var mid = comp.layers.addNull();
+mid.name = "Middle";
+mid.parent = mover;
+var e = T.solid(comp, "E", 20, 20, [0.9, 0.9, 0.2]);
+e.parent = mid;
+T.select(comp, [e], []);
+r = MotionKit.run("cropComp");
+T.check(r.ok && /E was parented to Middle[^\n]*won't follow that parent's animation/.test(r.message), "a static parent under an animated one: the note says E won't follow it");
+app.executeCommand(app.findMenuCommandId("Undo"));
+mover.transform.position.removeKey(2);
+mover.transform.position.removeKey(1);
+mid.transform.rotation.expression = "time * 90";
+T.select(comp, [e], []);
+r = MotionKit.run("cropComp");
+T.check(r.ok && /won't follow/.test(r.message), "a parent turned by an expression: noted too");
+app.executeCommand(app.findMenuCommandId("Undo"));
+mid.transform.rotation.expression = "";
+mid.transform.opacity.setValueAtTime(0, 0);
+mid.transform.opacity.setValueAtTime(1, 100);
+T.select(comp, [e], []);
+r = MotionKit.run("cropComp");
+T.check(r.ok && /E was parented to Middle, which isn't selected; it was unparented first\./.test(r.message), "a parent whose opacity alone is animated (children don't inherit it): no animation note");
 
 T.done();

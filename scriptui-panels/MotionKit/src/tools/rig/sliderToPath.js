@@ -7,18 +7,22 @@
 // enclosing shape groups' matrix (mkX) takes it to the path layer, toComp to comp space and the
 // attached layer's parent fromComp to the space its Position is in. Closed paths wrap (110 % is
 // 10 %), open paths clamp. "Orient along path" turns Rotation to the tangent's angle (through the
-// same spaces as a vector) plus Orient Offset.
+// same spaces as a vector) plus Orient Offset. Each layer's "Path Layer" Layer Control names the
+// path's layer, so renaming that layer keeps the link (the groups and the mask inside it are
+// still found by name).
 
 (function () {
   var NAME = "Slider to Path", ID = "sliderToPath";
   var U = MK.util, C = MK.controls, R = MK.rig;
-  var CTRL = { progress: C.name(NAME, "Path Progress"), orient: C.name(NAME, "Orient along path"), offset: C.name(NAME, "Orient Offset") };
+  var CTRL = { progress: C.name(NAME, "Path Progress"), layer: C.name(NAME, "Path Layer"), orient: C.name(NAME, "Orient along path"), offset: C.name(NAME, "Orient Offset") };
 
-  // The path, its layer (mkL), mkX and mkU, the progress as a fraction.
+  // The path, its layer (mkL), mkX and mkU, the progress as a fraction. Throws (caught by the
+  // caller) when the Path Layer control names no layer.
   function head(pe) {
     return [
-      "  var mkL = thisComp.layer(" + MK.expr.str(pe.layer.name) + ");",
-      R.matrixCode(pe.groups, false) + "  var mkPath = " + R.ref(pe.prop) + ";",
+      "  var mkL = " + R.layerOf(CTRL.layer) + ";",
+      "  if (!mkL) throw new Error(\"no path layer\");",
+      R.matrixCode(pe.groups, "mkL") + "  var mkPath = " + R.ref(pe.prop, "mkL") + ";",
       "  var mkU = " + C.ref(CTRL.progress) + ".value / 100;",
       "  if (!isFinite(mkU)) mkU = 0;",
       "  mkU = mkPath.isClosed() ? mkU - Math.floor(mkU) : Math.max(0, Math.min(1, mkU));"
@@ -93,6 +97,7 @@
         if (!want(pos)) continue;
         var at = !o.spread || n === 1 ? 0 : closed ? 100 * i / n : 100 * i / (n - 1);
         C.slider(L, CTRL.progress, at);
+        R.layerControl(L, CTRL.layer, pe.layer);
         MK.expr.set(pos, ID, positionExpr(pe));
         if (o.orient && want(props[n + i])) {
           C.checkbox(L, CTRL.orient, true);
@@ -101,7 +106,6 @@
         }
         done++;
       }
-      if (R.nameClash(pe.layer)) ctx.warn("Another layer is also named \"" + pe.layer.name + "\": rename one, or the expressions may read the wrong path.");
       var msg = "Put " + done + (done === 1 ? " layer" : " layers") + " on the path of " + pe.layer.name + ".";
       if (d.skip.length) msg += " Kept " + d.skip.length + " existing expression" + (d.skip.length === 1 ? "." : "s.");
       return ctx.done(msg);

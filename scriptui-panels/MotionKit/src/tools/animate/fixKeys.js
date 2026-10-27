@@ -46,8 +46,16 @@
       for (var m = 0; m < grp.length; m++) if (win.moved || all[grp[m]].moved) remove.push(grp[m] + 1);
       if (win.moved) write.push(win);
     }
+    // A key roves only between two others, so removing its neighbours ends its roving: roving
+    // keys left in place are rewritten too (first, at their own time) and rove again.
+    for (var v = 0; remove.length && v < all.length; v++) {
+      if (all[v].roving && U.indexOf(remove, v + 1) < 0) {
+        remove.push(v + 1);
+        write.unshift(all[v]);
+      }
+    }
     K.remove(prop, remove);
-    for (var w = 0; w < write.length; w++) A.write(prop, write[w], write[w].to);
+    A.writeAll(prop, write, function (k) { return k.to; });
     return r;
   }
 

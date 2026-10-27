@@ -2,7 +2,8 @@
 // Position Trace: the trace layer (name, place, label, no parent, controls), the vertex count
 // for Frames Trace / Frames Offset / Trace Detail, vertices at the target's comp positions
 // (through a moving parent), smoothing keeps the ends, stroke width, colour and taper, a deleted
-// target without NaN, several layers, bad selection, one undo step.
+// target without NaN, several layers, cameras and lights refused or skipped, bad selection, one
+// undo step.
 // Comp positions are checked with EffectCraft's own sourcePointToComp.
 $.evalFile(new File($.fileName).path + "/testlib.jsx");
 var H = MotionKit.helpers;
@@ -102,6 +103,17 @@ T.check(t2.property("ADBE Root Vectors Group").property(2).property("ADBE Vector
 ball.remove();
 var gone = path.valueAtTime(1, false);
 T.check(gone.vertices.length === 0 && path.expressionError === "", "a deleted target leaves an empty path, no NaN");
+
+// Cameras and lights have no anchor point: refused alone, skipped with other layers.
+var cam = comp.layers.addCamera("Cam", [500, 300]), lamp = comp.layers.addLight("Lamp", [500, 300]);
+var nc = comp.numLayers;
+T.select(comp, [cam, lamp], []);
+r = MotionKit.run("positionTrace");
+T.check(!r.ok && /cameras and lights have no anchor point to trace/.test(r.message) && comp.numLayers === nc, "only a camera and a light: refused, nothing added (" + r.message + ")");
+T.select(comp, [cam, b2], []);
+r = MotionKit.run("positionTrace");
+T.check(r.ok && r.created.length === 1 && r.created[0].name === "Box Trace 2" && /Skipped 1 camera or light/.test(r.message), "a camera with a layer: the layer is traced, the camera skipped: " + r.message);
+app.executeCommand(app.findMenuCommandId("Undo"));
 
 // One undo step.
 var n = comp.numLayers;
